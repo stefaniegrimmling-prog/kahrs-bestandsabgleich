@@ -21,34 +21,68 @@ KAHRS_CSV_URL = os.environ.get("KAHRS_CSV_URL", "https://holz-kahrs.de/media/exp
 
 # Produkte: Basis-SKUs der ausgewählten Produkte
 SELECTED_PRODUCTS = {
+    # --- Bangkirai ---
     "00002953",    # Bangkirai 25x145 KD grob/fein PREMIUM
-    "00003049",    # Cumaru 21x145 KD glatt/glatt
-    "00003049-K",  # Cumaru 21x145 KD Kurzlängen
-    "00003208-B",  # Ipe 21x145 KD glatt/glatt
-    "00017472",    # Ipe 21x145 AD glatt/glatt
-    "00017565",    # Cumaru 21x145 KD glatt/glatt
-    "00020723",    # Cumaru 35x145 AD
-    "00021820",    # Ipe 21x145 KD glatt/glatt
-    "00021843",    # Cumaru 25x145 KD glatt/glatt
-    "00022953",    # Cumaru 25x145 KD glatt/glatt
-    "00064008",    # Ipe 25x140 AD glatt/glatt
     "18-200144",   # Bangkirai 25x145 KD grob/fein PREMIUM
-    "18-201623",   # Cumaru 21x90 KD glatt/glatt
-    "18-202533",   # Ipe 19x140 KD Bolivien
-    "18-202534",   # Ipe 19x85 KD Bolivien
-    "18-202539",   # Ipe 21x120 AD Bolivien
-    "18-202540",   # Ipe 21x145 AD Bolivien
-    "18-202976",   # Cumaru 45x145 KD glatt/glatt
-    "18-202976-K", # Cumaru 45x145 KD Kurzlänge
-    "18-204088",   # Ipe 25x145 KD glatt/glatt
-    "18-204406",   # Ipe 19x140 KD glatt/glatt
-    "18-204470",   # Cumaru 40x145 KD glatt/glatt
-    "18-204535",   # Ipe 25x140 KD glatt/glatt
-    "18-204628",   # Ipe 21x143 AD glatt/glatt
     "18-205124",   # Bangkirai 25x145 KD glatt PREMIUM
     "18-205125",   # Bangkirai 45x145 KD glatt/grob PREMIUM
     "18-205142",   # Bangkirai 25x145 KD grob/fein Standard
     "18-205143",   # Bangkirai 25x145 KD glatt/glatt Standard
+    # --- Bongossi ---
+    "00003022",    # Bongossi 35x140 AD grob
+    "00003023",    # Bongossi 35x140 AD glatt
+    "00003027",    # Bongossi 40x140 AD glatt
+    "00003030",    # Bongossi 45x140 AD grob
+    "00022686",    # Bongossi 65x140 AD grob
+    "00022706",    # Bongossi 40x140 AD grob
+    "00022707",    # Bongossi 45x140 AD glatt
+    "18-204273",   # Bongossi 35x140 AD glatt
+    "18-204551",   # Bongossi 35x140 AD grob
+    "18-204552",   # Bongossi 45x140 AD glatt
+    "18-204553",   # Bongossi 45x140 AD grob
+    # --- Cumaru ---
+    "00003049",    # Cumaru 21x145 KD glatt/glatt
+    "00003049-K",  # Cumaru 21x145 KD Kurzlängen
+    "00017565",    # Cumaru 21x145 KD glatt/glatt
+    "00020723",    # Cumaru 35x145 AD
+    "00021843",    # Cumaru 25x145 KD glatt/glatt
+    "00022953",    # Cumaru 25x145 KD glatt/glatt
+    "18-201623",   # Cumaru 21x90 KD glatt/glatt
+    "18-202976",   # Cumaru 45x145 KD glatt/glatt
+    "18-202976-K", # Cumaru 45x145 KD Kurzlänge
+    "18-204470",   # Cumaru 40x145 KD glatt/glatt
+    # --- Eiche ---
+    "18-200110",   # Eiche 23x140 KD Rustikal
+    "18-201067",   # Eiche 23x140 KD Exklusiv
+    # --- Garapa ---
+    "00003164-B",  # Garapa 25x145 KD glatt/glatt
+    "00010127",    # Garapa 21x145 KD glatt/glatt
+    "00020155",    # Garapa 21x145 KD glatt/glatt
+    "18-201609",   # Garapa 21x90 KD glatt/glatt
+    "18-204152",   # Garapa 25x145 KD glatt/glatt
+    "18-204571",   # Garapa 25x90 KD glatt/glatt
+    # --- Guyana Ipe (Tanimbuca) ---
+    "18-202375",   # Guyana Ipe 25x140 KD glatt/glatt
+    # --- Guyana Teak (Basralocus) ---
+    "00003347",    # Guyana Teak 25x140 KD glatt/glatt
+    "00085092",    # Guyana Teak 25x140 KD glatt/glatt
+    "00085113",    # Guyana Teak 25x90 KD glatt/glatt
+    "18-202391-B", # Guyana Teak 21x90 KD glatt/glatt
+    # --- Ipe ---
+    "00003208-B",  # Ipe 21x145 KD glatt/glatt
+    "00017472",    # Ipe 21x145 AD glatt/glatt
+    "00021820",    # Ipe 21x145 KD glatt/glatt
+    "00064008",    # Ipe 25x140 AD glatt/glatt
+    "18-202533",   # Ipe 19x140 KD Bolivien
+    "18-202534",   # Ipe 19x85 KD Bolivien
+    "18-202539",   # Ipe 21x120 AD Bolivien
+    "18-202540",   # Ipe 21x145 AD Bolivien
+    "18-204088",   # Ipe 25x145 KD glatt/glatt
+    "18-204406",   # Ipe 19x140 KD glatt/glatt
+    "18-204535",   # Ipe 25x140 KD glatt/glatt
+    "18-204628",   # Ipe 21x143 AD glatt/glatt
+    # --- Sonstige ---
+    "18-204152",   # Garapa 25x145 KD glatt/glatt
 }
 
 LOG_FILE = "stock_update.log"
