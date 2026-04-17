@@ -1,0 +1,35 @@
+name: Kahrs Bestandsabgleich
+
+on:
+  schedule:
+    # 2x täglich: um 00:15 und 12:15 UTC (= 02:15 und 14:15 MESZ)
+    - cron: '15 0 * * *'
+    - cron: '15 12 * * *'
+  workflow_dispatch:  # Manuell auslösbar über GitHub
+
+jobs:
+  update-stock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python Setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Bestandsabgleich ausführen
+        env:
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          KAHRS_CSV_URL: ${{ secrets.KAHRS_CSV_URL }}
+        run: python3 update_stock_cloud.py
+
+      - name: Log-Ausgabe speichern
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-update-log-${{ github.run_number }}
+          path: stock_update.log
+          retention-days: 30

@@ -1,0 +1,6 @@
+.env
+kahrs_source.csv
+*.log
+output/
+logs/
+__pycache__/
