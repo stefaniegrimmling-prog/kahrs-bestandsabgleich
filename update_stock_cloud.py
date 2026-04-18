@@ -8,6 +8,7 @@ import csv
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 from collections import defaultdict
@@ -96,21 +97,30 @@ def log(msg):
         f.write(line + "\n")
 
 
-def shopify_api(endpoint, method="GET", data=None):
+def shopify_api(endpoint, method="GET", data=None, retries=5):
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-01/{endpoint}"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
         "Content-Type": "application/json",
     }
     body = json.dumps(data).encode("utf-8") if data else None
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else ""
-        log(f"API Fehler {e.code}: {error_body[:200]}")
-        return None
+    for attempt in range(retries):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                time.sleep(0.6)  # max ~1.6 calls/sec, unter dem 2/sec Limit
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode("utf-8") if e.fp else ""
+            if e.code == 429:
+                wait = 2 ** attempt  # exponential backoff: 1, 2, 4, 8, 16 sec
+                log(f"Rate limit (429) – warte {wait}s (Versuch {attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
+            log(f"API Fehler {e.code}: {error_body[:200]}")
+            return None
+    log(f"API Fehler: Maximale Versuche erreicht für {endpoint}")
+    return None
 
 
 def get_base_sku(nummer):
@@ -225,7 +235,8 @@ def main():
     log(f"  Fehler: {errors}")
     log(f"=== Bestandsabgleich beendet ===\n")
 
-    if errors > 0:
+    if errors > updated and updated == 0:
+        log("FEHLER: Kein einziges Update erfolgreich!")
         sys.exit(1)
 
 
