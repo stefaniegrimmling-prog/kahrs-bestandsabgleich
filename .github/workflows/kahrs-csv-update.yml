@@ -7,26 +7,31 @@ on:
     - cron: '10 12 * * *'   # 12:10 UTC = 14:10 MESZ
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   update-csv:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-      
+
       - name: Download latest Kahrs CSV
         run: |
-          curl -L -o kahrs_source.csv \
+          curl -fL --retry 3 --max-time 120 -A "Mozilla/5.0" \
+            -o kahrs_source.csv \
             "https://holz-kahrs.de/media/export_data/holz_kahrs-983c3908.csv"
-      
+          test -s kahrs_source.csv
+
       - name: Commit & Push
         run: |
           git config user.name "Kahrs CSV Bot"
           git config user.email "bot@holzagenten24.de"
-          git add kahrs_source.csv
-          git diff --cached --exit-code || (
+          git add -f kahrs_source.csv
+          if git diff --cached --quiet; then
+            echo "Keine Änderungen — nichts zu committen."
+          else
             git commit -m "chore: update Kahrs CSV from kahrs.de"
             git push
-          )
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fi
