@@ -97,7 +97,7 @@ def log(msg):
         f.write(line + "\n")
 
 
-def shopify_api(endpoint, method="GET", data=None, retries=5):
+def shopify_api(endpoint, method="GET", data=None, retries=6):
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-01/{endpoint}"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
@@ -107,17 +107,37 @@ def shopify_api(endpoint, method="GET", data=None, retries=5):
     for attempt in range(retries):
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 time.sleep(0.6)  # max ~1.6 calls/sec, unter dem 2/sec Limit
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8") if e.fp else ""
             if e.code == 429:
-                wait = 2 ** attempt  # exponential backoff: 1, 2, 4, 8, 16 sec
+                # Retry-After Header bevorzugen, sonst exponential backoff
+                wait = int(e.headers.get("Retry-After") or 2 ** attempt)
                 log(f"Rate limit (429) – warte {wait}s (Versuch {attempt+1}/{retries})")
                 time.sleep(wait)
                 continue
+            if e.code in (500, 502, 503, 504) and attempt < retries - 1:
+                wait = 2 * (attempt + 1)
+                log(f"Server-Fehler {e.code} – warte {wait}s (Versuch {attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
             log(f"API Fehler {e.code}: {error_body[:200]}")
+            return None
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as e:
+            if attempt < retries - 1:
+                wait = 3 * (attempt + 1)
+                log(f"Netzwerkfehler {type(e).__name__}: {e} – warte {wait}s (Versuch {attempt+1}/{retries})")
+                time.sleep(wait)
+                continue
+            log(f"Netzwerkfehler endgueltig: {type(e).__name__}: {e}")
+            return None
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(5)
+                continue
+            log(f"Unerwarteter Fehler: {type(e).__name__}: {e}")
             return None
     log(f"API Fehler: Maximale Versuche erreicht für {endpoint}")
     return None
