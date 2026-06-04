@@ -1,264 +1,377 @@
 #!/usr/bin/env python3
-"""
-Kahrs → Shopify Bestandsabgleich (Cloud-Version für GitHub Actions)
-Liest Konfiguration aus Environment-Variablen statt .env-Datei.
-"""
+"""Täglicher Sync Kahrs → Shopify: Bestand + 3-Tier-Sichtbarkeit.
 
-import csv
-import json
-import os
-import sys
-import time
-import urllib.request
-import urllib.error
-from collections import defaultdict
+Ersetzt update_stock.py (das nur Teilmenge syncte und Pagination-Bug hatte).
+
+Für JEDES Shopify-Produkt (active + draft):
+  1. SKU-Stem → Kahrs-Daten (Lagerbestand-Summe über alle Längen-Varianten,
+     Vorrat-Flag, Abverkauf-Flag).
+  2. Pro Variante: Shopify-Bestand = Kahrs Lagerbestand (nur wenn verändert).
+  3. Tier-Klassifikation:
+        Kahrs-Bestand > 0             → Tier 1 LAGER
+        Bestand=0 & Vorrat=TRUE       → Tier 2 VORRAT
+        Bestand=0 & sonst             → Tier 3 ABVERKAUF
+  4. Produkt-State gemäß Tier setzen (status, inventory_policy, Tags).
+
+Escape-Hatches (nichts ändern):
+  - Produkt hat Tag 'manual-keep'          → komplett überspringen
+  - Produkt hat Tag 'muster'               → komplett überspringen (Muster-Logik)
+  - Draft OHNE 'auto-hidden-stock'-Tag     → nicht reaktivieren (User prüft)
+
+Modi:
+  python3 stock_sync.py --dry-run   # Nur anzeigen, was passieren würde
+  python3 stock_sync.py             # Live
+"""
+import csv, json, os, sys, time, urllib.request, urllib.error
 from datetime import datetime
-from io import StringIO
+from collections import defaultdict
 
-# Konfiguration aus Environment-Variablen
-SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE", "")
-SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
-KAHRS_CSV_URL = os.environ.get("KAHRS_CSV_URL", "https://holz-kahrs.de/media/export_data/holz_kahrs-983c3908.csv")
+SCRIPT_DIR=os.path.dirname(os.path.abspath(__file__))
+KAHRS_CSV=os.path.join(SCRIPT_DIR,'kahrs_source.csv')
+LOG_DIR=SCRIPT_DIR  # Cloud: log ins Repo-Root (für GitHub-Actions-Artifact)
+KAHRS_URL=os.environ.get('KAHRS_CSV_URL','https://holz-kahrs.de/media/export_data/holz_kahrs-983c3908.csv')
 
-# Produkte: Basis-SKUs der ausgewählten Produkte
-SELECTED_PRODUCTS = {
-    # --- Bangkirai ---
-    "00002953",    # Bangkirai 25x145 KD grob/fein PREMIUM
-    "18-200144",   # Bangkirai 25x145 KD grob/fein PREMIUM
-    "18-205124",   # Bangkirai 25x145 KD glatt PREMIUM
-    "18-205125",   # Bangkirai 45x145 KD glatt/grob PREMIUM
-    "18-205142",   # Bangkirai 25x145 KD grob/fein Standard
-    "18-205143",   # Bangkirai 25x145 KD glatt/glatt Standard
-    # --- Bongossi ---
-    "00003022",    # Bongossi 35x140 AD grob
-    "00003023",    # Bongossi 35x140 AD glatt
-    "00003027",    # Bongossi 40x140 AD glatt
-    "00003030",    # Bongossi 45x140 AD grob
-    "00022686",    # Bongossi 65x140 AD grob
-    "00022706",    # Bongossi 40x140 AD grob
-    "00022707",    # Bongossi 45x140 AD glatt
-    "18-204273",   # Bongossi 35x140 AD glatt
-    "18-204551",   # Bongossi 35x140 AD grob
-    "18-204552",   # Bongossi 45x140 AD glatt
-    "18-204553",   # Bongossi 45x140 AD grob
-    # --- Cumaru ---
-    "00003049",    # Cumaru 21x145 KD glatt/glatt
-    "00003049-K",  # Cumaru 21x145 KD Kurzlängen
-    "00017565",    # Cumaru 21x145 KD glatt/glatt
-    "00020723",    # Cumaru 35x145 AD
-    "00021843",    # Cumaru 25x145 KD glatt/glatt
-    "00022953",    # Cumaru 25x145 KD glatt/glatt
-    "18-201623",   # Cumaru 21x90 KD glatt/glatt
-    "18-202976",   # Cumaru 45x145 KD glatt/glatt
-    "18-202976-K", # Cumaru 45x145 KD Kurzlänge
-    "18-204470",   # Cumaru 40x145 KD glatt/glatt
-    # --- Eiche ---
-    "18-200110",   # Eiche 23x140 KD Rustikal
-    "18-201067",   # Eiche 23x140 KD Exklusiv
-    # --- Garapa ---
-    "00003164-B",  # Garapa 25x145 KD glatt/glatt
-    "00010127",    # Garapa 21x145 KD glatt/glatt
-    "00020155",    # Garapa 21x145 KD glatt/glatt
-    "18-201609",   # Garapa 21x90 KD glatt/glatt
-    "18-204152",   # Garapa 25x145 KD glatt/glatt
-    "18-204571",   # Garapa 25x90 KD glatt/glatt
-    # --- Guyana Ipe (Tanimbuca) ---
-    "18-202375",   # Guyana Ipe 25x140 KD glatt/glatt
-    # --- Guyana Teak (Basralocus) ---
-    "00003347",    # Guyana Teak 25x140 KD glatt/glatt
-    "00085092",    # Guyana Teak 25x140 KD glatt/glatt
-    "00085113",    # Guyana Teak 25x90 KD glatt/glatt
-    "18-202391-B", # Guyana Teak 21x90 KD glatt/glatt
-    # --- Ipe ---
-    "00003208-B",  # Ipe 21x145 KD glatt/glatt
-    "00017472",    # Ipe 21x145 AD glatt/glatt
-    "00021820",    # Ipe 21x145 KD glatt/glatt
-    "00064008",    # Ipe 25x140 AD glatt/glatt
-    "18-202533",   # Ipe 19x140 KD Bolivien
-    "18-202534",   # Ipe 19x85 KD Bolivien
-    "18-202539",   # Ipe 21x120 AD Bolivien
-    "18-202540",   # Ipe 21x145 AD Bolivien
-    "18-204088",   # Ipe 25x145 KD glatt/glatt
-    "18-204406",   # Ipe 19x140 KD glatt/glatt
-    "18-204535",   # Ipe 25x140 KD glatt/glatt
-    "18-204628",   # Ipe 21x143 AD glatt/glatt
-    # --- Sonstige ---
-    "18-204152",   # Garapa 25x145 KD glatt/glatt
-}
+TAG_VORRAT='lieferzeit-14-tage'
+TAG_HIDDEN='auto-hidden-stock'
+TAG_HIDDEN_SORT='auto-hidden-sortiment'
+TAG_MANUAL='manual-keep'
 
-LOG_FILE = "stock_update.log"
-
+# Sortimente, die NIEMALS aktiv im Shop sein sollen
+BLOCKED_SORTIMENTE={'Auslauf','Restposten','Anfall','Anfrage','Ex_Artikel'}
+# Sortimente mit längerer Lieferzeit (Streckengeschäft)
+KOMMISSION_SORTIMENTE={'Kommission'}
 
 def log(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] {msg}"
-    print(line)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    ts=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    line=f"[{ts}] {msg}"
+    print(line,flush=True)
+    os.makedirs(LOG_DIR,exist_ok=True)
+    with open(os.path.join(LOG_DIR,'stock_update.log'),'a',encoding='utf-8') as f:
+        f.write(line+"\n")
 
+def load_env():
+    """Cloud-Version: liest aus os.environ (GitHub-Actions-Secrets)."""
+    env={}
+    for k in ('SHOPIFY_STORE','SHOPIFY_ACCESS_TOKEN'):
+        v=os.environ.get(k,'').strip()
+        if not v:
+            print(f"FEHLER: Env-Variable {k} fehlt"); sys.exit(1)
+        env[k]=v
+    return env
 
-def shopify_api(endpoint, method="GET", data=None, retries=6):
-    url = f"https://{SHOPIFY_STORE}/admin/api/2024-01/{endpoint}"
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-        "Content-Type": "application/json",
-    }
-    body = json.dumps(data).encode("utf-8") if data else None
-    for attempt in range(retries):
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+def api(env, endpoint, method='GET', data=None, _attempt=0):
+    url=f"https://{env['SHOPIFY_STORE']}/admin/api/2024-01/{endpoint}"
+    headers={'X-Shopify-Access-Token':env['SHOPIFY_ACCESS_TOKEN'],'Content-Type':'application/json'}
+    body=json.dumps(data).encode('utf-8') if data else None
+    req=urllib.request.Request(url,data=body,headers=headers,method=method)
+    try:
+        with urllib.request.urlopen(req,timeout=30) as resp:
+            link=resp.headers.get('Link','')
+            limit=resp.headers.get('X-Shopify-Shop-Api-Call-Limit','')
+            if limit:
+                used,total=[int(x) for x in limit.split('/')]
+                if used >= total - 2:
+                    time.sleep(1.0)  # bucket fast voll → atmen
+            return json.loads(resp.read().decode('utf-8')), link
+    except urllib.error.HTTPError as e:
+        body=e.read().decode('utf-8') if e.fp else ''
+        if e.code == 429 and _attempt < 5:
+            wait = float(e.headers.get('Retry-After', '2')) * (1 + _attempt)
+            time.sleep(wait)
+            return api(env, endpoint, method, data, _attempt+1)
+        if e.code in (500, 502, 503, 504) and _attempt < 3:
+            time.sleep(2 * (_attempt+1))
+            return api(env, endpoint, method, data, _attempt+1)
+        log(f"  API {e.code} {endpoint[:60]}: {body[:150]}")
+        return None, ''
+    except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as e:
+        if _attempt < 5:
+            time.sleep(3 * (_attempt+1))
+            return api(env, endpoint, method, data, _attempt+1)
+        log(f"  NET {endpoint[:60]}: {e}")
+        return None, ''
+    except Exception as e:
+        # alles andere: ein Versuch noch, dann sauber None zurueck
+        if _attempt < 2:
+            time.sleep(5)
+            return api(env, endpoint, method, data, _attempt+1)
+        log(f"  EXC {endpoint[:60]}: {type(e).__name__}: {e}")
+        return None, ''
+
+def download_kahrs():
+    log(f"Lade Kahrs-CSV von {KAHRS_URL[:70]} ...")
+    last_err=None
+    for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                time.sleep(0.6)  # max ~1.6 calls/sec, unter dem 2/sec Limit
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8") if e.fp else ""
-            if e.code == 429:
-                # Retry-After Header bevorzugen, sonst exponential backoff
-                wait = int(e.headers.get("Retry-After") or 2 ** attempt)
-                log(f"Rate limit (429) – warte {wait}s (Versuch {attempt+1}/{retries})")
-                time.sleep(wait)
-                continue
-            if e.code in (500, 502, 503, 504) and attempt < retries - 1:
-                wait = 2 * (attempt + 1)
-                log(f"Server-Fehler {e.code} – warte {wait}s (Versuch {attempt+1}/{retries})")
-                time.sleep(wait)
-                continue
-            log(f"API Fehler {e.code}: {error_body[:200]}")
-            return None
-        except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as e:
-            if attempt < retries - 1:
-                wait = 3 * (attempt + 1)
-                log(f"Netzwerkfehler {type(e).__name__}: {e} – warte {wait}s (Versuch {attempt+1}/{retries})")
-                time.sleep(wait)
-                continue
-            log(f"Netzwerkfehler endgueltig: {type(e).__name__}: {e}")
-            return None
+            req=urllib.request.Request(KAHRS_URL, headers={'User-Agent':'Mozilla/5.0'})
+            with urllib.request.urlopen(req,timeout=120) as resp:
+                data = resp.read()
+            if len(data) < 10000:
+                raise ValueError(f"CSV unrealistisch klein: {len(data)} bytes")
+            with open(KAHRS_CSV, 'wb') as f:
+                f.write(data)
+            log(f"Download OK ({len(data)} bytes).")
+            return
         except Exception as e:
-            if attempt < 2:
-                time.sleep(5)
-                continue
-            log(f"Unerwarteter Fehler: {type(e).__name__}: {e}")
-            return None
-    log(f"API Fehler: Maximale Versuche erreicht für {endpoint}")
-    return None
+            last_err=e
+            log(f"  Download-Fehler (Versuch {attempt+1}/3): {e}")
+            time.sleep(5 * (attempt+1))
+    raise RuntimeError(f"Kahrs-CSV-Download fehlgeschlagen nach 3 Versuchen: {last_err}")
 
+def parse_kahrs():
+    """Liefert:
+       sku_to_qty: {full_sku → lager_int}
+       stem_to_info: {sku_stem → {'lager_sum','vorrat','abverkauf'}}
+    """
+    sku_qty={}
+    stem=defaultdict(lambda:{'lager_sum':0,'vorrat':False,'abverkauf':False})
+    with open(KAHRS_CSV,'r',encoding='utf-8-sig') as f:
+        for row in csv.DictReader(f, delimiter=';', quotechar='"'):
+            num=(row.get('Nummer') or '').strip()
+            if not num: continue
+            try: qty=int((row.get('Lagerbestand') or '0').replace(',','').strip() or 0)
+            except: qty=0
+            if qty<0: qty=0  # Kahrs-Überverkauf (negativ) → im Shop als 0 führen
+            sku_qty[num]=qty
+            st=num.split('.')[0]
+            stem[st]['lager_sum']+=qty
+            if (row.get('Vorrat') or '').upper().strip()=='TRUE':    stem[st]['vorrat']=True
+            if (row.get('Abverkauf') or '').upper().strip()=='TRUE': stem[st]['abverkauf']=True
+            srt=(row.get('Sortiment') or '').strip()
+            # Erstes Sortiment je Stem festhalten (genug für Klassifikation)
+            if 'sortiment' not in stem[st] or not stem[st].get('sortiment'):
+                stem[st]['sortiment']=srt
+    return sku_qty, dict(stem)
 
-def get_base_sku(nummer):
-    return nummer.split(".")[0]
+def fetch_all_products(env):
+    """Paginiert korrekt via Link-Header."""
+    products=[]; endpoint='products.json?limit=250'
+    while endpoint:
+        result, link = api(env, endpoint)
+        if not result: break
+        products.extend(result.get('products',[]))
+        endpoint=None
+        if 'rel="next"' in link:
+            for part in link.split(','):
+                if 'rel="next"' in part:
+                    url=part.split(';')[0].strip().strip('<>')
+                    # endpoint relativ ab /admin/api/2024-01/
+                    endpoint=url.split('/admin/api/2024-01/')[-1]
+        time.sleep(0.3)
+    return products
 
+def get_location_id(env):
+    r,_=api(env,'locations.json')
+    return r['locations'][0]['id'] if r and r.get('locations') else None
 
-def download_and_parse_kahrs():
-    """Lädt Kahrs-CSV herunter und gibt {SKU: bestand} zurück."""
-    log("Lade Kahrs-CSV herunter...")
-    local_file = "kahrs_source.csv"
-    urllib.request.urlretrieve(KAHRS_CSV_URL, local_file)
-    log("Download abgeschlossen.")
+def set_inventory(env, inv_item_id, loc_id, qty, dry):
+    if dry: return True
+    r,_=api(env,'inventory_levels/set.json','POST',{'location_id':loc_id,'inventory_item_id':inv_item_id,'available':qty})
+    return r is not None
 
-    stock = {}
-    with open(local_file, "r", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f, delimiter=";", quotechar='"')
-        for row in reader:
-            nummer = row["Nummer"]
-            base = get_base_sku(nummer)
-            if base in SELECTED_PRODUCTS:
-                # Überspringe Musterplatten und Pakete
-                if "-MP" in nummer or ".PK-" in nummer:
-                    continue
-                bestand = int(row.get("Lagerbestand", "0") or "0")
-                stock[nummer] = bestand
-    return stock
+def update_variant_policy(env, vid, policy, dry):
+    if dry: return True
+    r,_=api(env,f'variants/{vid}.json','PUT',{'variant':{'id':vid,'inventory_policy':policy}})
+    return r is not None
 
+def update_product(env, pid, fields, dry):
+    if dry: return True
+    body={'product':{'id':pid, **fields}}
+    r,_=api(env,f'products/{pid}.json','PUT',body)
+    return r is not None
 
-def get_shopify_products():
-    sku_map = {}
-    endpoint = "products.json?limit=250"
-    result = shopify_api(endpoint)
-    if not result:
-        return sku_map
+def get_delivery_metafield(env, pid):
+    time.sleep(0.5)  # API rate limit (Shopify: 2/s)
+    r,_=api(env,f'products/{pid}/metafields.json?namespace=custom&key=delivery_time')
+    if not r: return None,None
+    mfs=r.get('metafields',[])
+    if not mfs: return None,None
+    return mfs[0].get('id'), mfs[0].get('value')
 
-    for product in result.get("products", []):
-        for variant in product.get("variants", []):
-            sku = variant.get("sku", "")
-            inv_item_id = variant.get("inventory_item_id")
-            if sku and inv_item_id:
-                sku_map[sku] = {
-                    "inventory_item_id": inv_item_id,
-                    "product_title": product["title"],
-                    "variant_title": variant.get("title", ""),
-                }
-    return sku_map
+def set_delivery_metafield(env, pid, value, dry):
+    """Setzt/aktualisiert custom.delivery_time. Skipped wenn Wert unverändert."""
+    cur_id, cur_val = get_delivery_metafield(env, pid)
+    if cur_val==value: return False  # unverändert
+    if dry: return True
+    if cur_id:
+        r,_=api(env,f'metafields/{cur_id}.json','PUT',{'metafield':{'id':cur_id,'value':value,'type':'single_line_text_field'}})
+    else:
+        payload={'metafield':{'namespace':'custom','key':'delivery_time','type':'single_line_text_field','value':value}}
+        r,_=api(env,f'products/{pid}/metafields.json','POST',payload)
+    return r is not None
 
+def merge_tags(tags_csv, add=None, remove=None):
+    tags=[t.strip() for t in (tags_csv or '').split(',') if t.strip()]
+    if remove:
+        tags=[t for t in tags if t not in remove]
+    if add:
+        for a in add:
+            if a not in tags: tags.append(a)
+    return ', '.join(tags)
 
-def get_location_id():
-    result = shopify_api("locations.json")
-    if result and result.get("locations"):
-        return result["locations"][0]["id"]
-    return None
+def classify(stock_product_sum, kahrs_info):
+    """Tier aus Summe der Shopify-Varianten-Bestände + Kahrs-Flags + Sortiment.
+    Gibt (tier, target_policy, add_tags, remove_tags, target_status, delivery_time)."""
+    vorrat=kahrs_info['vorrat']
+    sortiment=kahrs_info.get('sortiment','')
 
+    # Sortiment-Blockade: immer draft, egal wieviel Lager
+    if sortiment in BLOCKED_SORTIMENTE:
+        return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN],'draft','')
 
-def update_inventory(inventory_item_id, location_id, new_qty):
-    data = {
-        "location_id": location_id,
-        "inventory_item_id": inventory_item_id,
-        "available": new_qty,
-    }
-    result = shopify_api("inventory_levels/set.json", method="POST", data=data)
-    return result is not None
+    is_kommission = sortiment in KOMMISSION_SORTIMENTE
+    dt = '3-4 Wochen' if is_kommission else '1-2 Wochen'
 
+    if stock_product_sum>0:
+        return (1,'deny',[],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
+    if vorrat:
+        return (2,'continue',[TAG_VORRAT],[TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
+    return (3,'deny',[TAG_HIDDEN],[TAG_VORRAT,TAG_HIDDEN_SORT],'draft','')
 
 def main():
-    if not SHOPIFY_STORE or not SHOPIFY_ACCESS_TOKEN:
-        log("FEHLER: SHOPIFY_STORE und SHOPIFY_ACCESS_TOKEN müssen gesetzt sein!")
-        sys.exit(1)
+    dry='--dry-run' in sys.argv
+    mode='DRY RUN' if dry else 'LIVE'
+    log(f"=== Stock-Sync gestartet ({mode}) ===")
 
-    log("=== Bestandsabgleich gestartet ===")
+    env=load_env()
+    download_kahrs()
+    sku_qty, stem_info = parse_kahrs()
+    log(f"Kahrs: {len(sku_qty)} SKUs, {len(stem_info)} Stems")
 
-    # 1. Kahrs-Bestände laden
-    kahrs_stock = download_and_parse_kahrs()
-    log(f"Kahrs: {len(kahrs_stock)} relevante Varianten gefunden")
+    loc_id=get_location_id(env)
+    if not loc_id:
+        log("FEHLER: keine Location"); sys.exit(1)
+    log(f"Location: {loc_id}")
 
-    # 2. Shopify-Produkte laden
-    log("Lade Shopify-Produkte...")
-    shopify_products = get_shopify_products()
-    log(f"Shopify: {len(shopify_products)} Varianten mit SKU gefunden")
+    products=fetch_all_products(env)
+    log(f"Shopify: {len(products)} Produkte geladen")
 
-    # 3. Location ID
-    location_id = get_location_id()
-    if not location_id:
-        log("FEHLER: Keine Shopify-Location gefunden!")
-        sys.exit(1)
+    stats=defaultdict(int)
+    tier_count=defaultdict(int)
+    inv_updates=0; inv_skipped=0
+    prod_updates=0; var_updates=0; mf_updates=0
+    skipped_manual=0; skipped_no_kahrs=0; skipped_draft_keep=0
+    auto_drafted_no_csv=0; auto_drafted_sortiment=0
 
-    # 4. Bestände abgleichen
-    updated = 0
-    not_found = 0
-    errors = 0
+    for p in products:
+        pid=p['id']; handle=p['handle']; status=p['status']
+        tags_raw=p.get('tags','') or ''
+        tags=[t.strip() for t in tags_raw.split(',') if t.strip()]
 
-    for sku, kahrs_qty in sorted(kahrs_stock.items()):
-        if sku not in shopify_products:
-            log(f"  WARNUNG: SKU {sku} nicht in Shopify gefunden")
-            not_found += 1
+        if TAG_MANUAL in tags:
+            skipped_manual+=1; continue
+        # Muster werden NIE über stock_sync verwaltet (kostenlos, kein Bestand-Konzept)
+        if 'muster' in tags:
+            skipped_manual+=1; continue
+
+        # Kahrs-Match per erster Variante (alle Varianten teilen Stem)
+        variants=p.get('variants',[])
+        if not variants: continue
+        first_sku=(variants[0].get('sku','') or '').strip()
+        stem_key=first_sku.split('.')[0]
+        kinfo=stem_info.get(stem_key)
+        if not kinfo:
+            # Nicht mehr in Kahrs-CSV → auf draft setzen (sofern aktiv)
+            skipped_no_kahrs+=1
+            if status=='active':
+                new_tags=merge_tags(tags_raw, add=[TAG_HIDDEN_SORT], remove=[])
+                fields={'status':'draft','tags':new_tags}
+                if update_product(env,pid,fields,dry):
+                    auto_drafted_no_csv+=1
+                    log(f"  DRAFT-NO-CSV {handle[:55]}")
+                time.sleep(0.3 if not dry else 0)
             continue
 
-        info = shopify_products[sku]
-        inv_id = info["inventory_item_id"]
-        log(f"  UPDATE: {info['product_title']} [{info['variant_title']}] → {kahrs_qty} Stück")
+        # Summe Bestand NUR über Shopify-Varianten (Kahrs-Wert wenn bekannt,
+        # sonst aktueller Shopify-Wert — für manuell angelegte Varianten ohne Kahrs-Eintrag).
+        prod_stock_sum=0
+        for v in variants:
+            vsku=(v.get('sku','') or '').strip()
+            kq=sku_qty.get(vsku)
+            target_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
+            prod_stock_sum += target_qty
 
-        if update_inventory(inv_id, location_id, kahrs_qty):
-            updated += 1
-        else:
-            log(f"  FEHLER beim Update von {sku}")
-            errors += 1
+        tier, target_policy, add_t, rem_t, target_status, delivery_time = classify(prod_stock_sum, kinfo)
+        tier_count[tier]+=1
+        if kinfo.get('sortiment','') in BLOCKED_SORTIMENTE:
+            auto_drafted_sortiment+=1
 
-    log(f"\n=== Ergebnis ===")
-    log(f"  Aktualisiert: {updated}")
-    log(f"  Nicht gefunden: {not_found}")
-    log(f"  Fehler: {errors}")
-    log(f"=== Bestandsabgleich beendet ===\n")
+        # Escape: Draft ohne Auto-Tag NICHT aktivieren (User hat manuell entschieden)
+        if status=='draft' and TAG_HIDDEN not in tags and TAG_HIDDEN_SORT not in tags and target_status=='active':
+            skipped_draft_keep+=1
+            continue
 
-    if errors > updated and updated == 0:
-        log("FEHLER: Kein einziges Update erfolgreich!")
-        sys.exit(1)
+        # --- 1. Varianten-Bestand synchen ---
+        for v in variants:
+            vsku=(v.get('sku','') or '').strip()
+            kq=sku_qty.get(vsku)
+            if kq is None: continue  # Variante nicht in Kahrs
+            cur=v.get('inventory_quantity') or 0
+            if cur==kq:
+                inv_skipped+=1
+                continue
+            inv_id=v.get('inventory_item_id')
+            if inv_id and set_inventory(env,inv_id,loc_id,kq,dry):
+                inv_updates+=1
+                log(f"  INV {handle[:45]:45} {vsku:25} {cur:4d} → {kq:4d}")
+            time.sleep(0.2 if not dry else 0)
 
+        # --- 2. Varianten-Policy synchen ---
+        # Bei Tier 1 + Kahrs-Vorrat=TRUE: per Variant entscheiden (Mixed-Stock-Fix).
+        # Variants mit Bestand=0 sollen weiterhin als Vorrat bestellbar sein (continue),
+        # Variants mit Bestand>0 bleiben bei deny (kein Überverkauf der Lagerware).
+        per_variant = (tier == 1 and kinfo.get('vorrat'))
+        for v in variants:
+            vsku = (v.get('sku','') or '').strip()
+            kq = sku_qty.get(vsku)
+            var_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
+            if per_variant:
+                v_policy = 'deny' if var_qty > 0 else 'continue'
+            else:
+                v_policy = target_policy
+            if v.get('inventory_policy') != v_policy:
+                if update_variant_policy(env,v['id'],v_policy,dry):
+                    var_updates+=1
+                time.sleep(0.2 if not dry else 0)
 
-if __name__ == "__main__":
+        # --- 3. Produkt Status + Tags ---
+        new_tags=merge_tags(tags_raw, add=add_t, remove=rem_t)
+        status_change=(status!=target_status)
+        tags_change=(new_tags!=tags_raw.strip().rstrip(','))
+        # normalisieren: vergleich auf Set-Ebene
+        if set(t.strip() for t in new_tags.split(',') if t.strip()) == set(tags):
+            tags_change=False
+        if status_change or tags_change:
+            fields={}
+            if status_change: fields['status']=target_status
+            if tags_change:   fields['tags']=new_tags
+            if update_product(env,pid,fields,dry):
+                prod_updates+=1
+                log(f"  PRD T{tier} {handle[:50]:50} {' '.join(f'{k}={v}' for k,v in fields.items())[:80]}")
+            time.sleep(0.3 if not dry else 0)
+
+        # --- 4. Lieferzeit-Metafield ---
+        if delivery_time and target_status=='active':
+            if set_delivery_metafield(env, pid, delivery_time, dry):
+                mf_updates+=1
+                log(f"  MF  {handle[:55]:55} delivery_time={delivery_time}")
+                time.sleep(0.2 if not dry else 0)
+
+    log("")
+    log("=== Zusammenfassung ===")
+    log(f"  Tier 1 LAGER:     {tier_count[1]}")
+    log(f"  Tier 2 VORRAT:    {tier_count[2]}")
+    log(f"  Tier 3 ABVERKAUF: {tier_count[3]}")
+    log(f"  Bestand-Updates:  {inv_updates} (unverändert: {inv_skipped})")
+    log(f"  Variant-Policy:   {var_updates}")
+    log(f"  Produkt-Updates:  {prod_updates}")
+    log(f"  Lieferzeit-MF:    {mf_updates}")
+    log(f"  Auto-Draft (Sortiment blockiert): {auto_drafted_sortiment}")
+    log(f"  Auto-Draft (nicht in CSV):        {auto_drafted_no_csv}")
+    log(f"  Übersprungen (manual-keep): {skipped_manual}")
+    log(f"  Übersprungen (draft, kein Auto-Tag): {skipped_draft_keep}")
+    log(f"  Übersprungen (SKU nicht in Kahrs, war schon draft): {skipped_no_kahrs-auto_drafted_no_csv}")
+    log(f"=== Stock-Sync beendet ({mode}) ===\n")
+
+if __name__=='__main__':
     main()
