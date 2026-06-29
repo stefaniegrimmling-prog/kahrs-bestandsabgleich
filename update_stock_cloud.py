@@ -41,6 +41,42 @@ BLOCKED_SORTIMENTE={'Auslauf','Restposten','Anfall','Anfrage','Ex_Artikel'}
 # Sortimente mit längerer Lieferzeit (Streckengeschäft)
 KOMMISSION_SORTIMENTE={'Kommission'}
 
+# --- Versandklassen-Ableitung (1:1 aus classify_shipping.py, hier inline,
+#     damit der Cloud-Sync standalone bleibt — kein Import aus dem lokalen Repo) ---
+PAKET_CATEGORY_MARKERS=[
+    'Terrassenschrauben','Befestigungssysteme','Bohrer','Werkzeuge',
+    'Reinigung','Pflege','Holzschutz','Pfostenkappen','Pfostenträger',
+    'Einschlaghülsen','Fugenbänder','Gummigranulat','Stelzlager',
+    'Montagehilfen','Saunalampen','Holzschrauben','Befestigung',
+    'Kleber','Trittschalldämmung','Verlegewerkzeug','Bodenprofile',
+    'Abstandshalter','Winkelverbinder','Massivholzdielen-Schrauben',
+    'Bauholz Zubehör','Saunabau Zubehör|Kleinmaterial','Unkrautvlies',
+    'Holzboden Zubehör|Kleber',
+]
+SPERRGUT_KATEGORIE_MARKERS=[
+    'Bausätze','Saunabänke','Innensaunen','Gartenhäuser','Zaunfeld',
+    'HPL-Platten','OSB Platten','Stegplatten',
+]
+LEN_SPERRGUT=2400  # mm
+
+def ship_classify(max_len_mm, max_weight_kg, category):
+    cp=category or ''
+    if any(m in cp for m in SPERRGUT_KATEGORIE_MARKERS): return 'sperrgut'
+    if max_len_mm > LEN_SPERRGUT: return 'sperrgut'
+    if any(m in cp for m in PAKET_CATEGORY_MARKERS):
+        if max_weight_kg <= 10:  return 'paket'
+        if max_weight_kg <= 50:  return 'paket_xl'
+        if max_weight_kg <= 150: return 'kleintransport'
+        return 'stueckgut'
+    if 0 < max_weight_kg <= 10 and max_len_mm <= 1500: return 'paket'
+    if 0 < max_weight_kg <= 50 and max_len_mm <= 1500: return 'paket_xl'
+    if 50 < max_weight_kg <= 150 and max_len_mm <= 2000: return 'kleintransport'
+    return 'stueckgut'
+
+# Versandklassen, deren Zubehör/Paketware bei Vorrat=TRUE über den vorhandenen
+# Bestand hinaus bestellbar sein darf (Kahrs liefert nach). Sperriges bleibt gedeckelt.
+PAKET_OVERSELL_CLASSES={'paket','paket_xl'}
+
 def log(msg):
     ts=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     line=f"[{ts}] {msg}"
@@ -124,7 +160,8 @@ def parse_kahrs():
        stem_to_info: {sku_stem → {'lager_sum','vorrat','abverkauf'}}
     """
     sku_qty={}
-    stem=defaultdict(lambda:{'lager_sum':0,'vorrat':False,'abverkauf':False})
+    stem=defaultdict(lambda:{'lager_sum':0,'vorrat':False,'abverkauf':False,
+                             'max_len':0.0,'max_weight':0.0,'category':''})
     with open(KAHRS_CSV,'r',encoding='utf-8-sig') as f:
         for row in csv.DictReader(f, delimiter=';', quotechar='"'):
             num=(row.get('Nummer') or '').strip()
@@ -141,6 +178,16 @@ def parse_kahrs():
             # Erstes Sortiment je Stem festhalten (genug für Klassifikation)
             if 'sortiment' not in stem[st] or not stem[st].get('sortiment'):
                 stem[st]['sortiment']=srt
+            # Maße/Kategorie für Versandklassen-Ableitung (max über alle Varianten)
+            try: L=float((row.get('Länge') or '0').replace(',','.') or 0)
+            except: L=0.0
+            try: W=float((row.get('Gewicht') or '0').replace(',','.') or 0)
+            except: W=0.0
+            if L>stem[st]['max_len']:    stem[st]['max_len']=L
+            if W>stem[st]['max_weight']: stem[st]['max_weight']=W
+            if not stem[st]['category']: stem[st]['category']=row.get('categoryPath','') or ''
+    for st,d in stem.items():
+        d['shipping_class']=ship_classify(d['max_len'], d['max_weight'], d['category'])
     return sku_qty, dict(stem)
 
 def fetch_all_products(env):
@@ -214,6 +261,7 @@ def classify(stock_product_sum, kahrs_info):
     Gibt (tier, target_policy, add_tags, remove_tags, target_status, delivery_time)."""
     vorrat=kahrs_info['vorrat']
     sortiment=kahrs_info.get('sortiment','')
+    sclass=kahrs_info.get('shipping_class','')
 
     # Sortiment-Blockade: immer draft, egal wieviel Lager
     if sortiment in BLOCKED_SORTIMENTE:
@@ -223,7 +271,11 @@ def classify(stock_product_sum, kahrs_info):
     dt = '3-4 Wochen' if is_kommission else '1-2 Wochen'
 
     if stock_product_sum>0:
-        return (1,'deny',[],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
+        # Zubehör/Paketware mit Vorrat=TRUE über Bestand hinaus bestellbar
+        # (Kahrs liefert nach); sperrige/Palettenware bleibt gedeckelt.
+        oversell = vorrat and sclass in PAKET_OVERSELL_CLASSES
+        policy = 'continue' if oversell else 'deny'
+        return (1,policy,[],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
     if vorrat:
         return (2,'continue',[TAG_VORRAT],[TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
     return (3,'deny',[TAG_HIDDEN],[TAG_VORRAT,TAG_HIDDEN_SORT],'draft','')
@@ -320,12 +372,16 @@ def main():
         # Bei Tier 1 + Kahrs-Vorrat=TRUE: per Variant entscheiden (Mixed-Stock-Fix).
         # Variants mit Bestand=0 sollen weiterhin als Vorrat bestellbar sein (continue),
         # Variants mit Bestand>0 bleiben bei deny (kein Überverkauf der Lagerware).
-        per_variant = (tier == 1 and kinfo.get('vorrat'))
+        oversell = (tier == 1 and kinfo.get('vorrat')
+                    and kinfo.get('shipping_class') in PAKET_OVERSELL_CLASSES)
+        per_variant = (tier == 1 and kinfo.get('vorrat') and not oversell)
         for v in variants:
             vsku = (v.get('sku','') or '').strip()
             kq = sku_qty.get(vsku)
             var_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
-            if per_variant:
+            if oversell:
+                v_policy = 'continue'  # alle Varianten über Bestand bestellbar
+            elif per_variant:
                 v_policy = 'deny' if var_qty > 0 else 'continue'
             else:
                 v_policy = target_policy
