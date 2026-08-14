@@ -335,14 +335,13 @@ def main():
         # manual-keep schützt Status/Bestand/Policy/Tags, aber NICHT die Lieferzeit:
         # die soll auch hier der Kahrs-CSV folgen, sonst veralten die Angaben stumm.
         # Wer eine bewusst abweichende Lieferzeit pflegt, setzt zusätzlich TAG_MANUAL_DT.
+        # Muster werden NIE über stock_sync verwaltet (kostenlos, kein Bestand-Konzept),
+        # ihre Lieferzeit steht aber in der Kahrs-CSV (Sortiment 'Muster') und soll stimmen.
         dt_only=False
-        if TAG_MANUAL in tags:
+        if TAG_MANUAL in tags or 'muster' in tags:
             if TAG_MANUAL_DT in tags:
                 skipped_manual+=1; continue
             dt_only=True
-        # Muster werden NIE über stock_sync verwaltet (kostenlos, kein Bestand-Konzept)
-        if 'muster' in tags:
-            skipped_manual+=1; continue
 
         # Kahrs-Match per erster Variante (alle Varianten teilen Stem)
         variants=p.get('variants',[])
