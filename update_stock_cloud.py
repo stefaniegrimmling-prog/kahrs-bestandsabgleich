@@ -154,14 +154,26 @@ def download_kahrs():
             time.sleep(5 * (attempt+1))
     raise RuntimeError(f"Kahrs-CSV-Download fehlgeschlagen nach 3 Versuchen: {last_err}")
 
+def lz_rank(lz):
+    """Sortierschlüssel für Kahrs-Lieferzeit-Strings ('1 Woche','5-6 Wochen',…).
+    Nimmt die größte enthaltene Wochenzahl (konservativ). Leer → 0."""
+    import re
+    nums=[int(n) for n in re.findall(r'\d+', lz or '')]
+    return max(nums) if nums else 0
+
 def parse_kahrs():
     """Liefert:
        sku_to_qty: {full_sku → lager_int}
-       stem_to_info: {sku_stem → {'lager_sum','vorrat','abverkauf'}}
+       stem_to_info: {sku_stem → {'lager_sum','vorrat','abverkauf','delivery_time',…}}
+
+    delivery_time = echte Kahrs-Lieferzeit (Spalte 'Lieferzeit', seit 2026-08).
+    Bei mehreren Werten je Stem wird die KONSERVATIVSTE (längste) behalten,
+    damit dem Kunden nie eine zu optimistische Lieferzeit versprochen wird.
     """
     sku_qty={}
     stem=defaultdict(lambda:{'lager_sum':0,'vorrat':False,'abverkauf':False,
-                             'max_len':0.0,'max_weight':0.0,'category':''})
+                             'max_len':0.0,'max_weight':0.0,'category':'',
+                             'delivery_time':''})
     with open(KAHRS_CSV,'r',encoding='utf-8-sig') as f:
         for row in csv.DictReader(f, delimiter=';', quotechar='"'):
             num=(row.get('Nummer') or '').strip()
@@ -178,6 +190,10 @@ def parse_kahrs():
             # Erstes Sortiment je Stem festhalten (genug für Klassifikation)
             if 'sortiment' not in stem[st] or not stem[st].get('sortiment'):
                 stem[st]['sortiment']=srt
+            # Echte Kahrs-Lieferzeit: konservativsten (längsten) Wert je Stem behalten
+            lz=(row.get('Lieferzeit') or '').strip()
+            if lz and lz_rank(lz) > lz_rank(stem[st]['delivery_time']):
+                stem[st]['delivery_time']=lz
             # Maße/Kategorie für Versandklassen-Ableitung (max über alle Varianten)
             try: L=float((row.get('Länge') or '0').replace(',','.') or 0)
             except: L=0.0
@@ -267,8 +283,11 @@ def classify(stock_product_sum, kahrs_info):
     if sortiment in BLOCKED_SORTIMENTE:
         return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN],'draft','')
 
+    # Echte Kahrs-Lieferzeit hat Vorrang; Pauschal-Schätzung nur als Fallback,
+    # falls Kahrs für den Artikel (noch) keine Lieferzeit liefert.
+    real_dt = (kahrs_info.get('delivery_time') or '').strip()
     is_kommission = sortiment in KOMMISSION_SORTIMENTE
-    dt = '3-4 Wochen' if is_kommission else '1-2 Wochen'
+    dt = real_dt if real_dt else ('3-4 Wochen' if is_kommission else '1-2 Wochen')
 
     if stock_product_sum>0:
         # Zubehör/Paketware mit Vorrat=TRUE über Bestand hinaus bestellbar
