@@ -35,6 +35,9 @@ TAG_VORRAT='lieferzeit-14-tage'
 TAG_HIDDEN='auto-hidden-stock'
 TAG_HIDDEN_SORT='auto-hidden-sortiment'
 TAG_MANUAL='manual-keep'
+# Opt-out NUR für die Lieferzeit: Produkt behält seinen handgesetzten Wert.
+# Zusätzlich zu manual-keep setzen, wenn die Kahrs-Lieferzeit bewusst nicht gelten soll.
+TAG_MANUAL_DT='manual-lieferzeit'
 
 # Sortimente, die NIEMALS aktiv im Shop sein sollen
 BLOCKED_SORTIMENTE={'Auslauf','Restposten','Anfall','Anfrage','Ex_Artikel'}
@@ -329,8 +332,14 @@ def main():
         tags_raw=p.get('tags','') or ''
         tags=[t.strip() for t in tags_raw.split(',') if t.strip()]
 
+        # manual-keep schützt Status/Bestand/Policy/Tags, aber NICHT die Lieferzeit:
+        # die soll auch hier der Kahrs-CSV folgen, sonst veralten die Angaben stumm.
+        # Wer eine bewusst abweichende Lieferzeit pflegt, setzt zusätzlich TAG_MANUAL_DT.
+        dt_only=False
         if TAG_MANUAL in tags:
-            skipped_manual+=1; continue
+            if TAG_MANUAL_DT in tags:
+                skipped_manual+=1; continue
+            dt_only=True
         # Muster werden NIE über stock_sync verwaltet (kostenlos, kein Bestand-Konzept)
         if 'muster' in tags:
             skipped_manual+=1; continue
@@ -344,7 +353,7 @@ def main():
         if not kinfo:
             # Nicht mehr in Kahrs-CSV → auf draft setzen (sofern aktiv)
             skipped_no_kahrs+=1
-            if status=='active':
+            if status=='active' and not dt_only:
                 new_tags=merge_tags(tags_raw, add=[TAG_HIDDEN_SORT], remove=[])
                 fields={'status':'draft','tags':new_tags}
                 if update_product(env,pid,fields,dry):
@@ -366,6 +375,21 @@ def main():
         tier_count[tier]+=1
         if kinfo.get('sortiment','') in BLOCKED_SORTIMENTE:
             auto_drafted_sortiment+=1
+
+        # manual-keep: Bestand/Policy/Status/Tags bleiben unangetastet,
+        # nur das Lieferzeit-Metafeld wird gepflegt. Steht bewusst VOR der
+        # Draft-Schranke, damit auch zurückgehaltene Entwürfe korrekte Werte haben.
+        if dt_only:
+            skipped_manual+=1
+            # classify() liefert bei Auslauf-Sortiment/Bestand 0 bewusst ''. Genau diese
+            # Produkte sind hier aber absichtlich verkäuflich → echten Kahrs-Wert nehmen.
+            dt_manual = delivery_time or (kinfo.get('delivery_time') or '').strip()
+            if dt_manual:
+                if set_delivery_metafield(env, pid, dt_manual, dry):
+                    mf_updates+=1
+                    log(f"  MF* {handle[:55]:55} delivery_time={dt_manual} (manual-keep)")
+                    time.sleep(0.2 if not dry else 0)
+            continue
 
         # Escape: Draft ohne Auto-Tag NICHT aktivieren (User hat manuell entschieden)
         if status=='draft' and TAG_HIDDEN not in tags and TAG_HIDDEN_SORT not in tags and target_status=='active':
