@@ -40,7 +40,17 @@ TAG_MANUAL='manual-keep'
 TAG_MANUAL_DT='manual-lieferzeit'
 
 # Sortimente, die NIEMALS aktiv im Shop sein sollen
-BLOCKED_SORTIMENTE={'Auslauf','Restposten','Anfall','Anfrage','Ex_Artikel'}
+# ACHTUNG: Diese Datei muss inhaltlich mit ../stock_sync.py uebereinstimmen.
+# Beide Jobs laufen taeglich gegen denselben Shop (lokal via launchd + GitHub
+# Actions). Divergierten sie, schalten sie sich gegenseitig Produkte an und aus.
+# Genau das ist am 2026-09-03 passiert: die Cloud-Version kannte die am
+# 2026-08-17 eingefuehrte Restposten-Regel nicht und hat 210 Produkte mit
+# Bestand offline genommen, die der lokale Lauf zuvor aktiviert hatte.
+BLOCKED_SORTIMENTE={'Anfrage','Ex_Artikel','Ausverkauft'}
+
+# Restposten-Sortimente: verkaufen, solange Vorrat reicht (statt verstecken).
+RESTPOSTEN_SORTIMENTE={'Auslauf','Anfall','Restposten'}
+TAG_RESTPOSTEN='solange-vorrat-reicht'
 # Sortimente mit längerer Lieferzeit (Streckengeschäft)
 KOMMISSION_SORTIMENTE={'Kommission'}
 
@@ -284,7 +294,17 @@ def classify(stock_product_sum, kahrs_info):
 
     # Sortiment-Blockade: immer draft, egal wieviel Lager
     if sortiment in BLOCKED_SORTIMENTE:
-        return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN],'draft','')
+        return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN,TAG_RESTPOSTEN],'draft','')
+
+    # Restposten-Sortimente (Auslauf/Anfall/Restposten): Solange Vorrat reicht.
+    # Bei qty>0 aktiv + Restposten-Tag + deny (keine Überverkäufe, keine Nachlieferung).
+    # Bei qty=0 archived (nicht draft, damit sie nicht dauerhaft im Backend rumliegen).
+    if sortiment in RESTPOSTEN_SORTIMENTE:
+        real_dt = (kahrs_info.get('delivery_time') or '').strip()
+        dt_restposten = real_dt if real_dt else '1-2 Wochen'
+        if stock_product_sum > 0:
+            return (2,'deny',[TAG_RESTPOSTEN],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt_restposten)
+        return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN,TAG_RESTPOSTEN],'archived','')
 
     # Echte Kahrs-Lieferzeit hat Vorrang; Pauschal-Schätzung nur als Fallback,
     # falls Kahrs für den Artikel (noch) keine Lieferzeit liefert.
@@ -293,14 +313,14 @@ def classify(stock_product_sum, kahrs_info):
     dt = real_dt if real_dt else ('3-4 Wochen' if is_kommission else '1-2 Wochen')
 
     if stock_product_sum>0:
-        # Zubehör/Paketware mit Vorrat=TRUE über Bestand hinaus bestellbar
-        # (Kahrs liefert nach); sperrige/Palettenware bleibt gedeckelt.
+        # Zubehör/Paketware mit Vorrat=TRUE darf über den Bestand hinaus bestellt
+        # werden (Kahrs liefert nach); sperrige/Palettenware bleibt gedeckelt.
         oversell = vorrat and sclass in PAKET_OVERSELL_CLASSES
         policy = 'continue' if oversell else 'deny'
-        return (1,policy,[],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
+        return (1,policy,[],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT,TAG_RESTPOSTEN],'active',dt)
     if vorrat:
-        return (2,'continue',[TAG_VORRAT],[TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt)
-    return (3,'deny',[TAG_HIDDEN],[TAG_VORRAT,TAG_HIDDEN_SORT],'draft','')
+        return (2,'continue',[TAG_VORRAT],[TAG_HIDDEN,TAG_HIDDEN_SORT,TAG_RESTPOSTEN],'active',dt)
+    return (3,'deny',[TAG_HIDDEN],[TAG_VORRAT,TAG_HIDDEN_SORT,TAG_RESTPOSTEN],'draft','')
 
 def main():
     dry='--dry-run' in sys.argv
