@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""T√§glicher Sync Kahrs ‚Üí Shopify: Bestand + 3-Tier-Sichtbarkeit.
+"""Täglicher Sync Kahrs → Shopify: Bestand + 3-Tier-Sichtbarkeit.
 
 Ersetzt update_stock.py (das nur Teilmenge syncte und Pagination-Bug hatte).
 
-F√ºr JEDES Shopify-Produkt (active + draft):
-  1. SKU-Stem ‚Üí Kahrs-Daten (Lagerbestand-Summe √ºber alle L√§ngen-Varianten,
+Für JEDES Shopify-Produkt (active + draft):
+  1. SKU-Stem → Kahrs-Daten (Lagerbestand-Summe über alle Längen-Varianten,
      Vorrat-Flag, Abverkauf-Flag).
-  2. Pro Variante: Shopify-Bestand = Kahrs Lagerbestand (nur wenn ver√§ndert).
+  2. Pro Variante: Shopify-Bestand = Kahrs Lagerbestand (nur wenn verändert).
   3. Tier-Klassifikation:
-        Kahrs-Bestand > 0             ‚Üí Tier 1 LAGER
-        Bestand=0 & Vorrat=TRUE       ‚Üí Tier 2 VORRAT
-        Bestand=0 & sonst             ‚Üí Tier 3 ABVERKAUF
-  4. Produkt-State gem√§√ü Tier setzen (status, inventory_policy, Tags).
+        Kahrs-Bestand > 0             → Tier 1 LAGER
+        Bestand=0 & Vorrat=TRUE       → Tier 2 VORRAT
+        Bestand=0 & sonst             → Tier 3 ABVERKAUF
+  4. Produkt-State gemäß Tier setzen (status, inventory_policy, Tags).
 
-Escape-Hatches (nichts √§ndern):
-  - Produkt hat Tag 'manual-keep'          ‚Üí komplett √ºberspringen
-  - Produkt hat Tag 'muster'               ‚Üí komplett √ºberspringen (Muster-Logik)
-  - Draft OHNE 'auto-hidden-stock'-Tag     ‚Üí nicht reaktivieren (User pr√ºft)
+Escape-Hatches (nichts ändern):
+  - Produkt hat Tag 'manual-keep'          → komplett überspringen
+  - Produkt hat Tag 'muster'               → komplett überspringen (Muster-Logik)
+  - Draft OHNE 'auto-hidden-stock'-Tag     → nicht reaktivieren (User prüft)
 
 Modi:
-  python3 stock_sync.py --dry-run   # Nur anzeigen, was passieren w√ºrde
+  python3 stock_sync.py --dry-run   # Nur anzeigen, was passieren würde
   python3 stock_sync.py             # Live
 """
 import csv, json, os, sys, time, urllib.request, urllib.error
@@ -28,15 +28,15 @@ from collections import defaultdict
 
 SCRIPT_DIR=os.path.dirname(os.path.abspath(__file__))
 KAHRS_CSV=os.path.join(SCRIPT_DIR,'kahrs_source.csv')
-LOG_DIR=SCRIPT_DIR  # Cloud: log ins Repo-Root (f√ºr GitHub-Actions-Artifact)
+LOG_DIR=SCRIPT_DIR  # Cloud: log ins Repo-Root (für GitHub-Actions-Artifact)
 KAHRS_URL=os.environ.get('KAHRS_CSV_URL','https://holz-kahrs.de/media/export_data/holz_kahrs-983c3908.csv')
 
 TAG_VORRAT='lieferzeit-14-tage'
 TAG_HIDDEN='auto-hidden-stock'
 TAG_HIDDEN_SORT='auto-hidden-sortiment'
 TAG_MANUAL='manual-keep'
-# Opt-out NUR f√ºr die Lieferzeit: Produkt beh√§lt seinen handgesetzten Wert.
-# Zus√§tzlich zu manual-keep setzen, wenn die Kahrs-Lieferzeit bewusst nicht gelten soll.
+# Opt-out NUR für die Lieferzeit: Produkt behält seinen handgesetzten Wert.
+# Zusätzlich zu manual-keep setzen, wenn die Kahrs-Lieferzeit bewusst nicht gelten soll.
 TAG_MANUAL_DT='manual-lieferzeit'
 
 # Sortimente, die NIEMALS aktiv im Shop sein sollen
@@ -51,23 +51,23 @@ BLOCKED_SORTIMENTE={'Anfrage','Ex_Artikel','Ausverkauft'}
 # Restposten-Sortimente: verkaufen, solange Vorrat reicht (statt verstecken).
 RESTPOSTEN_SORTIMENTE={'Auslauf','Anfall','Restposten'}
 TAG_RESTPOSTEN='solange-vorrat-reicht'
-# Sortimente mit l√§ngerer Lieferzeit (Streckengesch√§ft)
+# Sortimente mit längerer Lieferzeit (Streckengeschäft)
 KOMMISSION_SORTIMENTE={'Kommission'}
 
 # --- Versandklassen-Ableitung (1:1 aus classify_shipping.py, hier inline,
-#     damit der Cloud-Sync standalone bleibt ‚Äî kein Import aus dem lokalen Repo) ---
+#     damit der Cloud-Sync standalone bleibt — kein Import aus dem lokalen Repo) ---
 PAKET_CATEGORY_MARKERS=[
     'Terrassenschrauben','Befestigungssysteme','Bohrer','Werkzeuge',
-    'Reinigung','Pflege','Holzschutz','Pfostenkappen','Pfostentr√§ger',
-    'Einschlagh√ºlsen','Fugenb√§nder','Gummigranulat','Stelzlager',
+    'Reinigung','Pflege','Holzschutz','Pfostenkappen','Pfostenträger',
+    'Einschlaghülsen','Fugenbänder','Gummigranulat','Stelzlager',
     'Montagehilfen','Saunalampen','Holzschrauben','Befestigung',
-    'Kleber','Trittschalld√§mmung','Verlegewerkzeug','Bodenprofile',
+    'Kleber','Trittschalldämmung','Verlegewerkzeug','Bodenprofile',
     'Abstandshalter','Winkelverbinder','Massivholzdielen-Schrauben',
-    'Bauholz Zubeh√∂r','Saunabau Zubeh√∂r|Kleinmaterial','Unkrautvlies',
-    'Holzboden Zubeh√∂r|Kleber',
+    'Bauholz Zubehör','Saunabau Zubehör|Kleinmaterial','Unkrautvlies',
+    'Holzboden Zubehör|Kleber',
 ]
 SPERRGUT_KATEGORIE_MARKERS=[
-    'Baus√§tze','Saunab√§nke','Innensaunen','Gartenh√§user','Zaunfeld',
+    'Bausätze','Saunabänke','Innensaunen','Gartenhäuser','Zaunfeld',
     'HPL-Platten','OSB Platten','Stegplatten',
 ]
 LEN_SPERRGUT=2400  # mm
@@ -86,7 +86,7 @@ def ship_classify(max_len_mm, max_weight_kg, category):
     if 50 < max_weight_kg <= 150 and max_len_mm <= 2000: return 'kleintransport'
     return 'stueckgut'
 
-# Versandklassen, deren Zubeh√∂r/Paketware bei Vorrat=TRUE √ºber den vorhandenen
+# Versandklassen, deren Zubehör/Paketware bei Vorrat=TRUE über den vorhandenen
 # Bestand hinaus bestellbar sein darf (Kahrs liefert nach). Sperriges bleibt gedeckelt.
 PAKET_OVERSELL_CLASSES={'paket','paket_xl'}
 
@@ -120,7 +120,7 @@ def api(env, endpoint, method='GET', data=None, _attempt=0):
             if limit:
                 used,total=[int(x) for x in limit.split('/')]
                 if used >= total - 2:
-                    time.sleep(1.0)  # bucket fast voll ‚Üí atmen
+                    time.sleep(1.0)  # bucket fast voll → atmen
             return json.loads(resp.read().decode('utf-8')), link
     except urllib.error.HTTPError as e:
         body=e.read().decode('utf-8') if e.fp else ''
@@ -168,19 +168,19 @@ def download_kahrs():
     raise RuntimeError(f"Kahrs-CSV-Download fehlgeschlagen nach 3 Versuchen: {last_err}")
 
 def lz_rank(lz):
-    """Sortierschl√ºssel f√ºr Kahrs-Lieferzeit-Strings ('1 Woche','5-6 Wochen',‚Ä¶).
-    Nimmt die gr√∂√üte enthaltene Wochenzahl (konservativ). Leer ‚Üí 0."""
+    """Sortierschlüssel für Kahrs-Lieferzeit-Strings ('1 Woche','5-6 Wochen',…).
+    Nimmt die größte enthaltene Wochenzahl (konservativ). Leer → 0."""
     import re
     nums=[int(n) for n in re.findall(r'\d+', lz or '')]
     return max(nums) if nums else 0
 
 def parse_kahrs():
     """Liefert:
-       sku_to_qty: {full_sku ‚Üí lager_int}
-       stem_to_info: {sku_stem ‚Üí {'lager_sum','vorrat','abverkauf','delivery_time',‚Ä¶}}
+       sku_to_qty: {full_sku → lager_int}
+       stem_to_info: {sku_stem → {'lager_sum','vorrat','abverkauf','delivery_time',…}}
 
     delivery_time = echte Kahrs-Lieferzeit (Spalte 'Lieferzeit', seit 2026-08).
-    Bei mehreren Werten je Stem wird die KONSERVATIVSTE (l√§ngste) behalten,
+    Bei mehreren Werten je Stem wird die KONSERVATIVSTE (längste) behalten,
     damit dem Kunden nie eine zu optimistische Lieferzeit versprochen wird.
     """
     sku_qty={}
@@ -193,22 +193,22 @@ def parse_kahrs():
             if not num: continue
             try: qty=int((row.get('Lagerbestand') or '0').replace(',','').strip() or 0)
             except: qty=0
-            if qty<0: qty=0  # Kahrs-√úberverkauf (negativ) ‚Üí im Shop als 0 f√ºhren
+            if qty<0: qty=0  # Kahrs-Überverkauf (negativ) → im Shop als 0 führen
             sku_qty[num]=qty
             st=num.split('.')[0]
             stem[st]['lager_sum']+=qty
             if (row.get('Vorrat') or '').upper().strip()=='TRUE':    stem[st]['vorrat']=True
             if (row.get('Abverkauf') or '').upper().strip()=='TRUE': stem[st]['abverkauf']=True
             srt=(row.get('Sortiment') or '').strip()
-            # Erstes Sortiment je Stem festhalten (genug f√ºr Klassifikation)
+            # Erstes Sortiment je Stem festhalten (genug für Klassifikation)
             if 'sortiment' not in stem[st] or not stem[st].get('sortiment'):
                 stem[st]['sortiment']=srt
-            # Echte Kahrs-Lieferzeit: konservativsten (l√§ngsten) Wert je Stem behalten
+            # Echte Kahrs-Lieferzeit: konservativsten (längsten) Wert je Stem behalten
             lz=(row.get('Lieferzeit') or '').strip()
             if lz and lz_rank(lz) > lz_rank(stem[st]['delivery_time']):
                 stem[st]['delivery_time']=lz
-            # Ma√üe/Kategorie f√ºr Versandklassen-Ableitung (max √ºber alle Varianten)
-            try: L=float((row.get('L√§nge') or '0').replace(',','.') or 0)
+            # Maße/Kategorie für Versandklassen-Ableitung (max über alle Varianten)
+            try: L=float((row.get('Länge') or '0').replace(',','.') or 0)
             except: L=0.0
             try: W=float((row.get('Gewicht') or '0').replace(',','.') or 0)
             except: W=0.0
@@ -265,9 +265,9 @@ def get_delivery_metafield(env, pid):
     return mfs[0].get('id'), mfs[0].get('value')
 
 def set_delivery_metafield(env, pid, value, dry):
-    """Setzt/aktualisiert custom.delivery_time. Skipped wenn Wert unver√§ndert."""
+    """Setzt/aktualisiert custom.delivery_time. Skipped wenn Wert unverändert."""
     cur_id, cur_val = get_delivery_metafield(env, pid)
-    if cur_val==value: return False  # unver√§ndert
+    if cur_val==value: return False  # unverändert
     if dry: return True
     if cur_id:
         r,_=api(env,f'metafields/{cur_id}.json','PUT',{'metafield':{'id':cur_id,'value':value,'type':'single_line_text_field'}})
@@ -286,7 +286,7 @@ def merge_tags(tags_csv, add=None, remove=None):
     return ', '.join(tags)
 
 def classify(stock_product_sum, kahrs_info):
-    """Tier aus Summe der Shopify-Varianten-Best√§nde + Kahrs-Flags + Sortiment.
+    """Tier aus Summe der Shopify-Varianten-Bestände + Kahrs-Flags + Sortiment.
     Gibt (tier, target_policy, add_tags, remove_tags, target_status, delivery_time)."""
     vorrat=kahrs_info['vorrat']
     sortiment=kahrs_info.get('sortiment','')
@@ -297,7 +297,7 @@ def classify(stock_product_sum, kahrs_info):
         return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN,TAG_RESTPOSTEN],'draft','')
 
     # Restposten-Sortimente (Auslauf/Anfall/Restposten): Solange Vorrat reicht.
-    # Bei qty>0 aktiv + Restposten-Tag + deny (keine √úberverk√§ufe, keine Nachlieferung).
+    # Bei qty>0 aktiv + Restposten-Tag + deny (keine Überverkäufe, keine Nachlieferung).
     # Bei qty=0 archived (nicht draft, damit sie nicht dauerhaft im Backend rumliegen).
     if sortiment in RESTPOSTEN_SORTIMENTE:
         real_dt = (kahrs_info.get('delivery_time') or '').strip()
@@ -306,14 +306,14 @@ def classify(stock_product_sum, kahrs_info):
             return (2,'deny',[TAG_RESTPOSTEN],[TAG_VORRAT,TAG_HIDDEN,TAG_HIDDEN_SORT],'active',dt_restposten)
         return (3,'deny',[TAG_HIDDEN_SORT],[TAG_VORRAT,TAG_HIDDEN,TAG_RESTPOSTEN],'archived','')
 
-    # Echte Kahrs-Lieferzeit hat Vorrang; Pauschal-Sch√§tzung nur als Fallback,
-    # falls Kahrs f√ºr den Artikel (noch) keine Lieferzeit liefert.
+    # Echte Kahrs-Lieferzeit hat Vorrang; Pauschal-Schätzung nur als Fallback,
+    # falls Kahrs für den Artikel (noch) keine Lieferzeit liefert.
     real_dt = (kahrs_info.get('delivery_time') or '').strip()
     is_kommission = sortiment in KOMMISSION_SORTIMENTE
     dt = real_dt if real_dt else ('3-4 Wochen' if is_kommission else '1-2 Wochen')
 
     if stock_product_sum>0:
-        # Zubeh√∂r/Paketware mit Vorrat=TRUE darf √ºber den Bestand hinaus bestellt
+        # Zubehör/Paketware mit Vorrat=TRUE darf über den Bestand hinaus bestellt
         # werden (Kahrs liefert nach); sperrige/Palettenware bleibt gedeckelt.
         oversell = vorrat and sclass in PAKET_OVERSELL_CLASSES
         policy = 'continue' if oversell else 'deny'
@@ -352,10 +352,10 @@ def main():
         tags_raw=p.get('tags','') or ''
         tags=[t.strip() for t in tags_raw.split(',') if t.strip()]
 
-        # manual-keep sch√ºtzt Status/Bestand/Policy/Tags, aber NICHT die Lieferzeit:
+        # manual-keep schützt Status/Bestand/Policy/Tags, aber NICHT die Lieferzeit:
         # die soll auch hier der Kahrs-CSV folgen, sonst veralten die Angaben stumm.
-        # Wer eine bewusst abweichende Lieferzeit pflegt, setzt zus√§tzlich TAG_MANUAL_DT.
-        # Muster werden NIE √ºber stock_sync verwaltet (kostenlos, kein Bestand-Konzept),
+        # Wer eine bewusst abweichende Lieferzeit pflegt, setzt zusätzlich TAG_MANUAL_DT.
+        # Muster werden NIE über stock_sync verwaltet (kostenlos, kein Bestand-Konzept),
         # ihre Lieferzeit steht aber in der Kahrs-CSV (Sortiment 'Muster') und soll stimmen.
         dt_only=False
         if TAG_MANUAL in tags or 'muster' in tags:
@@ -370,7 +370,7 @@ def main():
         stem_key=first_sku.split('.')[0]
         kinfo=stem_info.get(stem_key)
         if not kinfo:
-            # Nicht mehr in Kahrs-CSV ‚Üí auf draft setzen (sofern aktiv)
+            # Nicht mehr in Kahrs-CSV → auf draft setzen (sofern aktiv)
             skipped_no_kahrs+=1
             if status=='active' and not dt_only:
                 new_tags=merge_tags(tags_raw, add=[TAG_HIDDEN_SORT], remove=[])
@@ -381,8 +381,8 @@ def main():
                 time.sleep(0.3 if not dry else 0)
             continue
 
-        # Summe Bestand NUR √ºber Shopify-Varianten (Kahrs-Wert wenn bekannt,
-        # sonst aktueller Shopify-Wert ‚Äî f√ºr manuell angelegte Varianten ohne Kahrs-Eintrag).
+        # Summe Bestand NUR über Shopify-Varianten (Kahrs-Wert wenn bekannt,
+        # sonst aktueller Shopify-Wert — für manuell angelegte Varianten ohne Kahrs-Eintrag).
         prod_stock_sum=0
         for v in variants:
             vsku=(v.get('sku','') or '').strip()
@@ -397,11 +397,11 @@ def main():
 
         # manual-keep: Bestand/Policy/Status/Tags bleiben unangetastet,
         # nur das Lieferzeit-Metafeld wird gepflegt. Steht bewusst VOR der
-        # Draft-Schranke, damit auch zur√ºckgehaltene Entw√ºrfe korrekte Werte haben.
+        # Draft-Schranke, damit auch zurückgehaltene Entwürfe korrekte Werte haben.
         if dt_only:
             skipped_manual+=1
             # classify() liefert bei Auslauf-Sortiment/Bestand 0 bewusst ''. Genau diese
-            # Produkte sind hier aber absichtlich verk√§uflich ‚Üí echten Kahrs-Wert nehmen.
+            # Produkte sind hier aber absichtlich verkäuflich → echten Kahrs-Wert nehmen.
             dt_manual = delivery_time or (kinfo.get('delivery_time') or '').strip()
             if dt_manual:
                 if set_delivery_metafield(env, pid, dt_manual, dry):
@@ -435,13 +435,13 @@ def main():
             inv_id=v.get('inventory_item_id')
             if inv_id and set_inventory(env,inv_id,loc_id,kq,dry):
                 inv_updates+=1
-                log(f"  INV {handle[:45]:45} {vsku:25} {cur:4d} ‚Üí {kq:4d}")
+                log(f"  INV {handle[:45]:45} {vsku:25} {cur:4d} → {kq:4d}")
             time.sleep(0.2 if not dry else 0)
 
         # --- 2. Varianten-Policy synchen ---
         # Bei Tier 1 + Kahrs-Vorrat=TRUE: per Variant entscheiden (Mixed-Stock-Fix).
         # Variants mit Bestand=0 sollen weiterhin als Vorrat bestellbar sein (continue),
-        # Variants mit Bestand>0 bleiben bei deny (kein √úberverkauf der Lagerware).
+        # Variants mit Bestand>0 bleiben bei deny (kein Überverkauf der Lagerware).
         oversell = (tier == 1 and kinfo.get('vorrat')
                     and kinfo.get('shipping_class') in PAKET_OVERSELL_CLASSES)
         per_variant = (tier == 1 and kinfo.get('vorrat') and not oversell)
@@ -450,7 +450,7 @@ def main():
             kq = sku_qty.get(vsku)
             var_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
             if oversell:
-                v_policy = 'continue'  # alle Varianten √ºber Bestand bestellbar
+                v_policy = 'continue'  # alle Varianten über Bestand bestellbar
             elif per_variant:
                 v_policy = 'deny' if var_qty > 0 else 'continue'
             else:
@@ -488,15 +488,15 @@ def main():
     log(f"  Tier 1 LAGER:     {tier_count[1]}")
     log(f"  Tier 2 VORRAT:    {tier_count[2]}")
     log(f"  Tier 3 ABVERKAUF: {tier_count[3]}")
-    log(f"  Bestand-Updates:  {inv_updates} (unver√§ndert: {inv_skipped})")
+    log(f"  Bestand-Updates:  {inv_updates} (unverändert: {inv_skipped})")
     log(f"  Variant-Policy:   {var_updates}")
     log(f"  Produkt-Updates:  {prod_updates}")
     log(f"  Lieferzeit-MF:    {mf_updates}")
     log(f"  Auto-Draft (Sortiment blockiert): {auto_drafted_sortiment}")
     log(f"  Auto-Draft (nicht in CSV):        {auto_drafted_no_csv}")
-    log(f"  √úbersprungen (manual-keep): {skipped_manual}")
-    log(f"  √úbersprungen (draft, kein Auto-Tag): {skipped_draft_keep}")
-    log(f"  √úbersprungen (SKU nicht in Kahrs, war schon draft): {skipped_no_kahrs-auto_drafted_no_csv}")
+    log(f"  Übersprungen (manual-keep): {skipped_manual}")
+    log(f"  Übersprungen (draft, kein Auto-Tag): {skipped_draft_keep}")
+    log(f"  Übersprungen (SKU nicht in Kahrs, war schon draft): {skipped_no_kahrs-auto_drafted_no_csv}")
     log(f"=== Stock-Sync beendet ({mode}) ===\n")
 
 if __name__=='__main__':
