@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cloud-Preis-Waechter (GitHub Actions) -- laeuft unabhaengig vom Mac, auch am
 Wochenende. Prueft JEDE aktive Variante gegen den EK und repariert echte
-Unter-EK-Preise automatisch auf +7% Mindestmarge. Mailt eine Zusammenfassung,
+Unter-EK-Preise automatisch auf +3% Mindestmarge (Notnetz, wenn der Mac aus ist). Mailt eine Zusammenfassung,
 wenn etwas gefunden/geaendert wurde (sonst still).
 
 Gleiche geprueften Regeln wie der lokale Waechter (Stand 2026-08-03):
@@ -23,7 +23,7 @@ KAHRS_CSV = os.path.join(SCRIPT_DIR, 'kahrs_source.csv')
 KAHRS_URL = os.environ.get('KAHRS_CSV_URL', 'https://holz-kahrs.de/media/export_data/holz_kahrs-983c3908.csv')
 
 VAT = 1.19
-MIN_MARGIN = 1.07          # +7% Mindestmarge beim Auto-Fix
+MIN_MARGIN = 1.03   # 27.09.2026: 1.07 -> 1.03, gleiche Untergrenze wie preis_abgleich.py (EK + Zahlungsgebuehren)
 DUENN_MARGIN = 1.05
 # Whitelist: geprueft ok / bekannte Ausnahmen -> ganz ueberspringen (kein Alarm).
 WHITELIST = {'00021382', '00021384', '00021368'}
