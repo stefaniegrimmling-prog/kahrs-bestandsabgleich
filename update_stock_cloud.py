@@ -322,6 +322,39 @@ def classify(stock_product_sum, kahrs_info):
         return (2,'continue',[TAG_VORRAT],[TAG_HIDDEN,TAG_HIDDEN_SORT,TAG_RESTPOSTEN],'active',dt)
     return (3,'deny',[TAG_HIDDEN],[TAG_VORRAT,TAG_HIDDEN_SORT,TAG_RESTPOSTEN],'draft','')
 
+def sync_bestand(env, handle, variants, sku_qty, loc_id, dry):
+    """Shop-Bestand jeder Variante = Kahrs-Lagerbestand ihrer CSV-Zeile; ohne Zeile = 0.
+
+    Seit 28.09.2026 eigene Funktion (Freigabe Stefanie), weil sie auch fuer manual-keep-
+    Produkte und fuer Produkte ohne Kahrs-Zeile laufen muss. Vorher froren beide ein:
+    Gummigranulat-Pads zeigten 3 Stueck bei Kahrs 0. Grundsatz: Der Bestand folgt IMMER
+    Kahrs, kein Tag schuetzt ihn. Rueckgabe (aktualisiert, genullt, unveraendert).
+    """
+    upd = zero = skip = 0
+    for v in variants:
+        vsku=(v.get('sku','') or '').strip()
+        if not vsku:
+            skip+=1; continue
+        kq=sku_qty.get(vsku)
+        cur=v.get('inventory_quantity') or 0
+        inv_id=v.get('inventory_item_id')
+        if kq is None:
+            if cur > 0 and inv_id and set_inventory(env,inv_id,loc_id,0,dry):
+                zero+=1
+                log(f"  INV-ZERO {handle[:45]:45} {vsku:25} {cur:4d} → 0")
+                time.sleep(0.2 if not dry else 0)
+            else:
+                skip+=1
+            continue
+        if cur==kq:
+            skip+=1; continue
+        if inv_id and set_inventory(env,inv_id,loc_id,kq,dry):
+            upd+=1
+            log(f"  INV {handle[:45]:45} {vsku:25} {cur:4d} → {kq:4d}")
+        time.sleep(0.2 if not dry else 0)
+    return upd, zero, skip
+
+
 def main():
     dry='--dry-run' in sys.argv
     mode='DRY RUN' if dry else 'LIVE'
@@ -370,8 +403,11 @@ def main():
         stem_key=first_sku.split('.')[0]
         kinfo=stem_info.get(stem_key)
         if not kinfo:
-            # Nicht mehr in Kahrs-CSV → auf draft setzen (sofern aktiv)
+            # Nicht mehr in Kahrs-CSV → Bestand 0 (immer, auch manual-keep) und draft (sofern aktiv)
             skipped_no_kahrs+=1
+            if 'muster' not in tags:
+                u,z,sk=sync_bestand(env, handle, variants, sku_qty, loc_id, dry)
+                inv_zeroed+=z
             if status=='active' and not dt_only:
                 new_tags=merge_tags(tags_raw, add=[TAG_HIDDEN_SORT], remove=[])
                 fields={'status':'draft','tags':new_tags}
@@ -400,6 +436,9 @@ def main():
         # Draft-Schranke, damit auch zurückgehaltene Entwürfe korrekte Werte haben.
         if dt_only:
             skipped_manual+=1
+            if TAG_MANUAL in tags:
+                u,z,sk=sync_bestand(env, handle, variants, sku_qty, loc_id, dry)
+                inv_updates+=u; inv_zeroed+=z; inv_skipped+=sk
             # classify() liefert bei Auslauf-Sortiment/Bestand 0 bewusst ''. Genau diese
             # Produkte sind hier aber absichtlich verkäuflich → echten Kahrs-Wert nehmen.
             dt_manual = delivery_time or (kinfo.get('delivery_time') or '').strip()
@@ -424,35 +463,8 @@ def main():
             continue
 
         # --- 1. Varianten-Bestand synchen ---
-        for v in variants:
-            vsku=(v.get('sku','') or '').strip()
-            kq=sku_qty.get(vsku)
-            if kq is None:
-                # Variante nicht mehr in der Kahrs-CSV: Kahrs streicht abverkaufte Laengen
-                # komplett statt 0 zu melden. Bestand auf 0 setzen, sonst bleibt die Laenge
-                # bestellbar (Ipe 00003208-B 28.09.2026: 23/10/5 Stueck im Shop, bei Kahrs
-                # nichts). Gleiche Regel wie stock_sync.py (INV-ZERO), seit 28.09.2026.
-                if not vsku:
-                    inv_skipped+=1; continue
-                cur=v.get('inventory_quantity') or 0
-                if cur > 0:
-                    inv_id=v.get('inventory_item_id')
-                    if inv_id and set_inventory(env,inv_id,loc_id,0,dry):
-                        inv_zeroed+=1
-                        log(f"  INV-ZERO {handle[:45]:45} {vsku:25} {cur:4d} → 0")
-                    time.sleep(0.2 if not dry else 0)
-                else:
-                    inv_skipped+=1
-                continue
-            cur=v.get('inventory_quantity') or 0
-            if cur==kq:
-                inv_skipped+=1
-                continue
-            inv_id=v.get('inventory_item_id')
-            if inv_id and set_inventory(env,inv_id,loc_id,kq,dry):
-                inv_updates+=1
-                log(f"  INV {handle[:45]:45} {vsku:25} {cur:4d} → {kq:4d}")
-            time.sleep(0.2 if not dry else 0)
+        u,z,sk=sync_bestand(env, handle, variants, sku_qty, loc_id, dry)
+        inv_updates+=u; inv_zeroed+=z; inv_skipped+=sk
 
         # --- 2. Varianten-Policy synchen ---
         # Bei Tier 1 + Kahrs-Vorrat=TRUE: per Variant entscheiden (Mixed-Stock-Fix).
@@ -465,7 +477,9 @@ def main():
             vsku = (v.get('sku','') or '').strip()
             kq = sku_qty.get(vsku)
             var_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
-            if oversell:
+            if kq is None:
+                v_policy = 'deny'      # Laenge bei Kahrs gestrichen: nie weiterverkaufen (28.09.2026)
+            elif oversell:
                 v_policy = 'continue'  # alle Varianten über Bestand bestellbar
             elif per_variant:
                 v_policy = 'deny' if var_qty > 0 else 'continue'
