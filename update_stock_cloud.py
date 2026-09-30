@@ -355,6 +355,26 @@ def sync_bestand(env, handle, variants, sku_qty, loc_id, dry):
     return upd, zero, skip
 
 
+def deny_ohne_kahrs(env, handle, variants, sku_qty, dry):
+    """Varianten ohne Kahrs-Zeile auf 'deny' (nicht weiterverkaufen).
+
+    Seit 30.09.2026: Fiel ein Artikel aus der CSV, nullte der Sync den Bestand, liess aber
+    'continue' aus der Vorrat-Zeit stehen. 112 Entwuerfe/Archivierte waren so beim
+    Reaktivieren sofort bestellbar, ohne dass Kahrs liefern kann. Laeuft auch fuer
+    manual-keep und von Hand archivierte/zurueckgehaltene Produkte, nie fuer SERVICE-SKUs.
+    """
+    n = 0
+    for v in variants:
+        vsku = (v.get('sku', '') or '').strip()
+        if not vsku or vsku.startswith('SERVICE-') or vsku in sku_qty:
+            continue
+        if v.get('inventory_policy') == 'continue' and update_variant_policy(env, v['id'], 'deny', dry):
+            n += 1
+            log(f"  POLICY-DENY {handle[:45]:45} {vsku:25} (nicht bei Kahrs)")
+            time.sleep(0.2 if not dry else 0)
+    return n
+
+
 def main():
     dry='--dry-run' in sys.argv
     mode='DRY RUN' if dry else 'LIVE'
@@ -390,10 +410,12 @@ def main():
         # Wer eine bewusst abweichende Lieferzeit pflegt, setzt zusätzlich TAG_MANUAL_DT.
         # Muster werden NIE über stock_sync verwaltet (kostenlos, kein Bestand-Konzept),
         # ihre Lieferzeit steht aber in der Kahrs-CSV (Sortiment 'Muster') und soll stimmen.
+        # manual-lieferzeit schuetzt NUR die Lieferzeit (seit 30.09.2026). Vorher sprang der
+        # Sync bei diesem Tag komplett weiter, auch am Bestand vorbei: Timeless 00270061
+        # behielt 97 Stueck, obwohl Kahrs den Artikel nicht mehr fuehrte.
+        dt_fest = TAG_MANUAL_DT in tags
         dt_only=False
         if TAG_MANUAL in tags or 'muster' in tags:
-            if TAG_MANUAL_DT in tags:
-                skipped_manual+=1; continue
             dt_only=True
 
         # Kahrs-Match per erster Variante (alle Varianten teilen Stem)
@@ -408,6 +430,8 @@ def main():
             if 'muster' not in tags:
                 u,z,sk=sync_bestand(env, handle, variants, sku_qty, loc_id, dry)
                 inv_zeroed+=z
+            if 'muster' not in tags and 'service' not in tags:
+                var_updates+=deny_ohne_kahrs(env, handle, variants, sku_qty, dry)
             if status=='active' and not dt_only:
                 new_tags=merge_tags(tags_raw, add=[TAG_HIDDEN_SORT], remove=[])
                 fields={'status':'draft','tags':new_tags}
@@ -442,7 +466,7 @@ def main():
             # classify() liefert bei Auslauf-Sortiment/Bestand 0 bewusst ''. Genau diese
             # Produkte sind hier aber absichtlich verkäuflich → echten Kahrs-Wert nehmen.
             dt_manual = delivery_time or (kinfo.get('delivery_time') or '').strip()
-            if dt_manual:
+            if dt_manual and not dt_fest:
                 if set_delivery_metafield(env, pid, dt_manual, dry):
                     mf_updates+=1
                     log(f"  MF* {handle[:55]:55} delivery_time={dt_manual} (manual-keep)")
@@ -455,11 +479,13 @@ def main():
         # und kommen bei neuem Bestand weiterhin zurueck.
         if status=='archived' and TAG_HIDDEN not in tags and TAG_HIDDEN_SORT not in tags:
             skipped_draft_keep+=1
+            var_updates+=deny_ohne_kahrs(env, handle, variants, sku_qty, dry)
             continue
 
         # Escape: Draft ohne Auto-Tag NICHT aktivieren (User hat manuell entschieden)
         if status=='draft' and TAG_HIDDEN not in tags and TAG_HIDDEN_SORT not in tags and target_status=='active':
             skipped_draft_keep+=1
+            var_updates+=deny_ohne_kahrs(env, handle, variants, sku_qty, dry)
             continue
 
         # --- 1. Varianten-Bestand synchen ---
