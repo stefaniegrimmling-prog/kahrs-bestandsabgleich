@@ -119,7 +119,8 @@ def load_kahrs():
             if be == 'qm':
                 be = 'm²'
             k[sku] = {'ek': ek, 'basis': be, 'laenge_mm': num(row.get('Länge')),
-                      'breite_mm': num(row.get('Breite')), 'kauf': num(row.get('Kaufeinheit'))}
+                      'breite_mm': num(row.get('Breite')), 'hoehe_mm': num(row.get('Höhe')),
+                      'kauf': num(row.get('Kaufeinheit'))}
     return k
 
 
@@ -128,6 +129,21 @@ def faktor(sku, k):
     if ke and abs(ke - 1.0) > 0.01:
         return 1.0
     basis = k['basis']
+    if basis == 'm³':
+        # Stammware (seit 04.10.2026, wie preis_engine lokal): verkauft wird das Brett, Kahrs rechnet
+        # je m³. Volumen = H x B x L, nur wenn die drei Masse auch im Mass-Code der Artikelnummer
+        # stehen (18-204926.0352303500 = 35 x 230 x 3500). Sonst None = nicht pruefen.
+        H, B, L = k.get('hoehe_mm', 0), k['breite_mm'], k['laenge_mm']
+        suf = sku.split('.', 1)[1].split('.')[0] if '.' in sku else ''
+        if H > 0 and B > 0 and L > 0 and suf.isdigit():
+            pos = 0
+            for teil in (str(int(H)), str(int(B)), str(int(L))):
+                i = suf.find(teil, pos)
+                if i < 0:
+                    return None
+                pos = i + len(teil)
+            return H * B * L / 1e9
+        return None
     L = k['laenge_mm']
     if L <= 0 and '.' in sku and sku.split('.', 1)[1][:1].isdigit():
         suf = sku.split('.', 1)[1].split('.')[0]
