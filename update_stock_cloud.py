@@ -375,6 +375,23 @@ def deny_ohne_kahrs(env, handle, variants, sku_qty, dry):
     return n
 
 
+_MINDEST = None
+
+
+def mindest_je_sku():
+    """SKU -> Kahrs-Mindestabnahme (Spalte mindestAbnahme), fehlend = 1."""
+    global _MINDEST
+    if _MINDEST is None:
+        _MINDEST = {}
+        with open(KAHRS_CSV, encoding='utf-8-sig') as f:
+            for r in csv.DictReader(f, delimiter=';'):
+                try:
+                    _MINDEST[(r.get('Nummer') or '').strip()] = max(1, int(float(r.get('mindestAbnahme') or 1)))
+                except ValueError:
+                    pass
+    return _MINDEST
+
+
 def main():
     dry='--dry-run' in sys.argv
     mode='DRY RUN' if dry else 'LIVE'
@@ -508,7 +525,10 @@ def main():
             elif oversell:
                 v_policy = 'continue'  # alle Varianten über Bestand bestellbar
             elif per_variant:
-                v_policy = 'deny' if var_qty > 0 else 'continue'
+                # Lager nur verkaufen, wenn es die Kahrs-Mindestabnahme deckt. Sonst ist die Variante
+                # Bestellware wie bei 0 Stueck (05.10.2026, Shop-TUEV: Leimbinder 1 Stueck bei
+                # Mindestmenge 2 war auf 1 gedeckelt und damit gar nicht kaufbar).
+                v_policy = 'deny' if var_qty >= max(1, mindest_je_sku().get(vsku, 1)) else 'continue'
             else:
                 v_policy = target_policy
             if v.get('inventory_policy') != v_policy:
