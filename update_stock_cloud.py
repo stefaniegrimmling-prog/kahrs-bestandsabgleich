@@ -217,6 +217,16 @@ def parse_kahrs():
             if not stem[st]['category']: stem[st]['category']=row.get('categoryPath','') or ''
     for st,d in stem.items():
         d['shipping_class']=ship_classify(d['max_len'], d['max_weight'], d['category'])
+    # Ganze Pakete (28.10.2026, KONZEPT_PAKETE.md): Shop-Variante <Laenge>-PAKET-<Dielen>,
+    # Bestand = gleiche Kahrs-Lose - 1. Faellt das Modul aus, bleiben die Paket-Varianten ohne
+    # Eintrag und werden wie gestrichene Laengen auf 0/deny gesetzt (sicher, nie Ueberverkauf).
+    # pakete.py ist eine Kopie aus dem Hauptordner, beide muessen gleich bleiben.
+    try:
+        from pakete import lade_sorten
+        for sku, s in lade_sorten(KAHRS_CSV).items():
+            sku_qty[sku] = s['bestand']
+    except Exception as e:
+        log(f"  WARN Pakete nicht geladen ({e}): Paket-Varianten werden auf 0 gesetzt")
     return sku_qty, dict(stem)
 
 def fetch_all_products(env):
@@ -463,6 +473,8 @@ def main():
         prod_stock_sum=0
         for v in variants:
             vsku=(v.get('sku','') or '').strip()
+            if '-PAKET-' in vsku:
+                continue  # ganze Pakete zaehlen nicht fuer Status/Tier, nur die Einzellaengen
             kq=sku_qty.get(vsku)
             target_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
             prod_stock_sum += target_qty
@@ -522,6 +534,8 @@ def main():
             var_qty = kq if kq is not None else (v.get('inventory_quantity') or 0)
             if kq is None:
                 v_policy = 'deny'      # Laenge bei Kahrs gestrichen: nie weiterverkaufen (28.09.2026)
+            elif '-PAKET-' in vsku:
+                v_policy = 'deny'      # jedes Los gibt es nur einmal: nie ueber Bestand (28.10.2026)
             elif oversell:
                 v_policy = 'continue'  # alle Varianten über Bestand bestellbar
             elif per_variant:
