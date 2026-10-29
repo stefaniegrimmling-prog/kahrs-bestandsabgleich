@@ -573,6 +573,14 @@ def main():
                 log(f"  MF  {handle[:55]:55} delivery_time={delivery_time}")
                 time.sleep(0.2 if not dry else 0)
 
+    # --- 5. Mindestmenge im selben Lauf wie der Bestand (seit 29.10.2026) ---
+    # Vorher zog nur kahrs_uebernahme sie Stunden spaeter nach: Artikel kaufbar, aber Kasse
+    # verlangte die alte Mindestmenge (Fichte weiss grundiert 29.10.: Kahrs 4, Shop noch 6).
+    from mindestmenge import abgleichen as mindest_abgleichen
+    log("")
+    log("Mindestmenge/Bestellschritt aus Kahrs-CSV:")
+    mindest_abgleichen(env, KAHRS_CSV, not dry, log)
+
     log("")
     log("=== Zusammenfassung ===")
     log(f"  Tier 1 LAGER:     {tier_count[1]}")
