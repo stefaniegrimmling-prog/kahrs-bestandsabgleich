@@ -18,6 +18,8 @@ Stefanies Regeln (28.10.2026):
   2. Preis = Kahrs-Paketpreis x 1,40 x 0,98 brutto. 1,40 ist HHDs regulaerer Paketfaktor,
      am 28.10. an 7 Produkten centgenau abgelesen (output/hhd_pakete_20261028.json).
      HHD-Aktionen (Black Week) gehen wir NICHT mit. Nie unter EK + 3 %.
+     Rechnet HHD bei einer Holzart anders (Tauari 03.11.: 1,45 bis 1,55), gilt der dort
+     abgelesene Faktor aus HHD_PAKET_FAKTOR_JE_STAMM.
   3. Nur Lose, die im Einkauf guenstiger sind als die Einzelware derselben Laenge.
 """
 import csv
@@ -31,6 +33,12 @@ KAHRS_CSV = os.path.join(HERE, 'kahrs_source.csv')
 VAT = 1.19
 MIN_MARGE = 0.03          # wie preis_engine.MIN_MARGE
 HHD_PAKET_FAKTOR = 1.40   # HHD brutto / Kahrs-Paket-EK netto, regulaer (28.10.2026)
+# Abweichender HHD-Paketfaktor je Kahrs-Stamm (Nummer vor dem Punkt), von Hand auf HHDs
+# Paketseite abgelesen (HHD-Paketpreis je lfm / Kahrs-Paket-EK je lfm). Nur mit Beleg eintragen.
+HHD_PAKET_FAKTOR_JE_STAMM = {
+    '00061605': 1.545,  # Tauari Zaunbretter 21x145 Hamburg: HHD 6,75 €/lfm, PK-EK 4,37 (03.11.2026)
+    '00061610': 1.454,  # Tauari Mittelpfosten 90x90 Hamburg: HHD 11,28 €/lfm, PK-EK 7,76 (03.11.2026)
+}
 ABSTAND_WETTBEWERB = 0.02 # wie preis_engine.ABSTAND_WETTBEWERB
 PUFFER = 1                # so viele Lose je Sorte bleiben unverkauft
 
@@ -68,9 +76,15 @@ def _ek(preish):
     return 0.0
 
 
-def paket_preis(ek_lfm, lfm):
+def hhd_faktor(basis):
+    """HHD-Paketfaktor fuer eine Laengennummer: eigener Beleg je Stamm, sonst der Standard."""
+    return HHD_PAKET_FAKTOR_JE_STAMM.get((basis or '').split('.')[0], HHD_PAKET_FAKTOR)
+
+
+def paket_preis(ek_lfm, lfm, faktor=None):
     """Bruttopreis eines ganzen Pakets nach Regel 2, nie unter EK + 3 %."""
-    ziel = round(ek_lfm * lfm * HHD_PAKET_FAKTOR * (1 - ABSTAND_WETTBEWERB), 2)
+    faktor = HHD_PAKET_FAKTOR if faktor is None else faktor
+    ziel = round(ek_lfm * lfm * faktor * (1 - ABSTAND_WETTBEWERB), 2)
     untergrenze = math.ceil(ek_lfm * lfm * (1 + MIN_MARGE) * VAT * 100 - 1e-9) / 100
     return max(ziel, untergrenze)
 
@@ -128,7 +142,7 @@ def lade_sorten(pfad=KAHRS_CSV):
         s['anzahl'] = len(s['lose'])
         s['bestand'] = max(s['anzahl'] - PUFFER, 0)
         s['letztes'] = s['anzahl'] == 1
-        s['preis'] = paket_preis(s['ek_lfm'], s['lfm'])
+        s['preis'] = paket_preis(s['ek_lfm'], s['lfm'], hhd_faktor(s['basis']))
     return sorten
 
 
