@@ -38,6 +38,7 @@ HHD_PAKET_FAKTOR = 1.40   # HHD brutto / Kahrs-Paket-EK netto, regulaer (28.10.2
 HHD_PAKET_FAKTOR_JE_STAMM = {
     '00061605': 1.545,  # Tauari Zaunbretter 21x145 Hamburg: HHD 6,75 €/lfm, PK-EK 4,37 (03.11.2026)
     '00061610': 1.454,  # Tauari Mittelpfosten 90x90 Hamburg: HHD 11,28 €/lfm, PK-EK 7,76 (03.11.2026)
+    '00061615': 1.426,  # Tauari Endpfosten 90x90 Hamburg: HHD 14,56 €/lfm, PK-EK 10,21 (04.11.2026)
 }
 ABSTAND_WETTBEWERB = 0.02 # wie preis_engine.ABSTAND_WETTBEWERB
 PUFFER = 1                # so viele Lose je Sorte bleiben unverkauft
