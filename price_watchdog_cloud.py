@@ -214,7 +214,10 @@ def main():
         unit_ok = k['basis'] in ('lfm', 'm²') and not (k.get('kauf') and abs(k['kauf'] - 1.0) > 0.01)
         safe = unit_ok and stem not in NO_TOUCH and sku not in NO_TOUCH and not protected
         neu = round(ek * f * MIN_MARGIN * VAT, 2)
-        rec = (sku, round(ek, 2), round(vk, 2), neu, vi['title'][:45], vi['id'])
+        # Mailtext: VK gilt je Stueck, ek je Basiseinheit. Beide auf dieselbe Menge bringen,
+        # sonst liest sich der Alarm wie "VK 60.52 unter EK 10.51" (06.11.2026).
+        ek_text = f"{ek * f * VAT:.2f} brutto je Stueck ({ek:.2f} netto je {k['basis'] or 'Einheit'})"
+        rec = (sku, ek_text, round(vk, 2), neu, vi['title'][:45], vi['id'])
         (fixed if safe else alarm_only).append(rec)
 
     changed = 0
