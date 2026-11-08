@@ -69,12 +69,27 @@ PAKET_CATEGORY_MARKERS=[
 SPERRGUT_KATEGORIE_MARKERS=[
     'Bausätze','Saunabänke','Innensaunen','Gartenhäuser','Zaunfeld',
     'HPL-Platten','OSB Platten','Stegplatten',
+    'modifizierte Hölzer','Zaunserien',
 ]
+# Flächenware (Parkett/Vinyl/Pferdestallbohlen): palettenschwer, immer Sperrgut (2026-08-07)
+FLAECHE_PALETTE_MARKERS=['Parkettboden','Vinyl- & Designboden','Pferdestallbohlen']
+# Ausnahme: Zaunzubehör (Schrauben, Verbinder) ist paketfähig, vor SPERRGUT prüfen
+ZAUNZUBEHOER_MARKERS=['Zubehör WPC Zaunserien','Zaunzubehör','Zaunbau Zubehör']
 LEN_SPERRGUT=2400  # mm
+# 08.11.2026: Diese Kopie war seit August veraltet (ohne Flächenware, Zaunzubehör,
+# modifizierte Hölzer, Zaunserien). Folge: 6 Fishbone-Parkettsorten nach jedem
+# Cloud-Lauf über Bestand bestellbar. tests/test_cloud_versandklasse.py vergleicht
+# diese Funktion jetzt täglich mit classify_shipping.classify für alle Kahrs-Stämme.
 
-def ship_classify(max_len_mm, max_weight_kg, category):
+def ship_classify(max_len_mm, max_weight_kg, category, tags=''):
     cp=category or ''
+    if 'muster' in (tags or '').lower(): return 'muster'
+    if any(m in cp for m in ZAUNZUBEHOER_MARKERS):
+        if max_weight_kg <= 10: return 'paket'
+        if max_weight_kg <= 50: return 'paket_xl'
+        return 'kleintransport'
     if any(m in cp for m in SPERRGUT_KATEGORIE_MARKERS): return 'sperrgut'
+    if any(m in cp for m in FLAECHE_PALETTE_MARKERS): return 'sperrgut'
     if max_len_mm > LEN_SPERRGUT: return 'sperrgut'
     if any(m in cp for m in PAKET_CATEGORY_MARKERS):
         if max_weight_kg <= 10:  return 'paket'
