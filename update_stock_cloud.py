@@ -175,6 +175,11 @@ def download_kahrs():
             with open(KAHRS_CSV, 'wb') as f:
                 f.write(data)
             log(f"Download OK ({len(data)} bytes).")
+            # Wunschlaengen der Pferdestallbohlen (21.11.2026, wunschlaenge.py, gleiche Datei wie im
+            # Hauptordner): je Laenge eine CSV-Zeile anhaengen. Ohne das wuerde deny_ohne_kahrs alle
+            # Wunschlaengen sperren (Ping-Pong mit dem lokalen Lauf wie am 07.11.).
+            from wunschlaenge import erweitere_csv
+            log(f"Wunschlaengen ergaenzt: {erweitere_csv(KAHRS_CSV)} Zeilen")
             return
         except Exception as e:
             last_err=e

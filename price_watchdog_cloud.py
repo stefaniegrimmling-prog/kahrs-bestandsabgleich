@@ -90,6 +90,8 @@ def download_kahrs():
             with open(KAHRS_CSV, 'wb') as f:
                 f.write(data)
             log(f"Kahrs-CSV geladen ({len(data)} bytes)")
+            from wunschlaenge import erweitere_csv   # Pferdestallbohlen je Laenge (21.11.2026)
+            log(f"Wunschlaengen ergaenzt: {erweitere_csv(KAHRS_CSV)} Zeilen")
             return
         except Exception as e:
             log(f"  Download-Fehler {attempt+1}/3: {e}")
